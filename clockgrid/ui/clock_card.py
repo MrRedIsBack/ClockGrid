@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPalette, QPen
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPalette, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -85,6 +85,44 @@ class ProgressRing(QWidget):
         p.end()
 
 
+def _icon(kind: str, color: QColor, size: int = 16) -> QIcon:
+    """Small crisp icons drawn in code: play, stop, edit (pencil) and more (dots)."""
+    scale = 2
+    pix = QPixmap(size * scale, size * scale)
+    pix.setDevicePixelRatio(scale)
+    pix.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    s = float(size)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(color)
+    if kind == "play":
+        pen = QPen(color, s * 0.1)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        p.setPen(pen)
+        p.drawPolygon(QPolygonF([QPointF(s * 0.3, s * 0.2), QPointF(s * 0.3, s * 0.8), QPointF(s * 0.8, s * 0.5)]))
+    elif kind == "stop":
+        p.drawRoundedRect(QRectF(s * 0.24, s * 0.24, s * 0.52, s * 0.52), s * 0.1, s * 0.1)
+    elif kind == "edit":
+        pen = QPen(color, s * 0.13)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(pen)
+        p.drawLine(QPointF(s * 0.36, s * 0.64), QPointF(s * 0.78, s * 0.22))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawPolygon(QPolygonF([QPointF(s * 0.16, s * 0.84), QPointF(s * 0.22, s * 0.6), QPointF(s * 0.4, s * 0.78)]))
+    elif kind == "more":
+        for x in (0.25, 0.5, 0.75):
+            p.drawEllipse(QPointF(s * x, s * 0.5), s * 0.08, s * 0.08)
+    p.end()
+    return QIcon(pix)
+
+
+def _text_on(color: QColor) -> str:
+    """Black or white, whichever reads better on the given background."""
+    luminance = 0.299 * color.red() + 0.587 * color.green() + 0.114 * color.blue()
+    return "#1a1a1a" if luminance > 165 else "#ffffff"
+
+
 class ClockCard(QFrame):
     toggle_requested = Signal(int)
     edit_requested = Signal(int)
@@ -108,16 +146,19 @@ class ClockCard(QFrame):
         self.name_label.setFixedHeight(self.name_label.fontMetrics().lineSpacing() * 2 + 2)
         self.name_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
 
-        menu_button = QToolButton()
-        menu_button.setText("⋯")
-        menu_button.setAutoRaise(True)
-        menu_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        menu_button.setMenu(self._build_menu())
-        menu_button.setStyleSheet("QToolButton::menu-indicator { image: none; }")
+        ink = QColor(self.palette().color(QPalette.ColorRole.WindowText))
+        ink.setAlpha(190)
+        edit_button = self._icon_button(_icon("edit", ink), "Edit goal")
+        edit_button.clicked.connect(lambda: self.edit_requested.emit(self.goal_id))
+        more_button = self._icon_button(_icon("more", ink), "More")
+        more_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        more_button.setMenu(self._build_menu())
 
         header = QHBoxLayout()
+        header.setSpacing(2)
         header.addWidget(self.name_label, 1)
-        header.addWidget(menu_button, 0, Qt.AlignmentFlag.AlignTop)
+        header.addWidget(edit_button, 0, Qt.AlignmentFlag.AlignTop)
+        header.addWidget(more_button, 0, Qt.AlignmentFlag.AlignTop)
 
         self.ring = ProgressRing()
 
@@ -132,7 +173,9 @@ class ClockCard(QFrame):
         self.detail_label.setEnabled(False)  # greyed-out secondary text
 
         self.button = QPushButton("Start")
-        self.button.setMinimumHeight(34)
+        self.button.setObjectName("Toggle")
+        self.button.setFixedHeight(36)
+        self.button.setIconSize(QSize(14, 14))
         self.button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.button.clicked.connect(lambda: self.toggle_requested.emit(self.goal_id))
 
@@ -143,12 +186,23 @@ class ClockCard(QFrame):
         layout.addWidget(self.ring)
         layout.addWidget(self.time_label)
         layout.addWidget(self.detail_label)
+        layout.addSpacing(4)
         layout.addWidget(self.button)
 
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(
             lambda pos: self._build_menu().exec(self.mapToGlobal(pos))
         )
+
+    @staticmethod
+    def _icon_button(icon: QIcon, tooltip: str) -> QToolButton:
+        button = QToolButton()
+        button.setIcon(icon)
+        button.setIconSize(QSize(16, 16))
+        button.setFixedSize(28, 28)
+        button.setToolTip(tooltip)
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        return button
 
     def _build_menu(self) -> QMenu:
         menu = QMenu(self)
@@ -177,7 +231,6 @@ class ClockCard(QFrame):
         else:
             self.detail_label.setText(f"{format_duration(target - worked)} to go")
 
-        self.button.setText("Stop" if running else "Start")
         self._apply_style(goal.color, running)
 
     def _apply_style(self, color: str, running: bool) -> None:
@@ -185,13 +238,31 @@ class ClockCard(QFrame):
         if key == self._style_key:
             return
         self._style_key = key
-        border = f"2px solid {color}" if running else "1px solid palette(mid)"
-        button = (
-            f"background: {color}; color: white; border: none; border-radius: 6px; font-weight: bold;"
-            if running
-            else "border-radius: 6px;"
-        )
+        c = QColor(color)
+        r, g, b = c.red(), c.green(), c.blue()
+        if running:
+            text = _text_on(c)
+            self.button.setText(" Stop")
+            self.button.setIcon(_icon("stop", QColor(text)))
+            toggle = (
+                f"QPushButton#Toggle {{ background: {color}; color: {text}; border: 1px solid {color};"
+                " border-radius: 18px; font-weight: bold; }"
+                f"QPushButton#Toggle:hover {{ background: {c.darker(112).name()}; }}"
+            )
+        else:
+            self.button.setText(" Start")
+            self.button.setIcon(_icon("play", c))
+            toggle = (
+                f"QPushButton#Toggle {{ background: rgba({r}, {g}, {b}, 0.14); color: palette(text);"
+                f" border: 1px solid rgba({r}, {g}, {b}, 0.55); border-radius: 18px; font-weight: bold; }}"
+                f"QPushButton#Toggle:hover {{ background: rgba({r}, {g}, {b}, 0.26); }}"
+                f"QPushButton#Toggle:pressed {{ background: rgba({r}, {g}, {b}, 0.36); }}"
+            )
+        border = f"2px solid {color}" if running else "1px solid rgba(127, 127, 127, 0.25)"
         self.setStyleSheet(
             f"#ClockCard {{ background: palette(base); border: {border}; border-radius: 12px; }}"
-            f"#ClockCard QPushButton {{ {button} }}"
+            + toggle
+            + "QToolButton { border: none; border-radius: 6px; background: transparent; }"
+            "QToolButton:hover { background: rgba(127, 127, 127, 0.22); }"
+            "QToolButton::menu-indicator { image: none; width: 0; }"
         )
