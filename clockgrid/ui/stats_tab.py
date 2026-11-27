@@ -124,7 +124,7 @@ class StatsTab(QWidget):
 
         self.heatmap_card = Card("When you work")
         self.heatmap = Heatmap()
-        heat_note = QLabel("Darker means more time. Hover a cell for details.")
+        heat_note = QLabel("Stronger colour means more time. Hover a cell for details.")
         heat_note.setEnabled(False)
         self.heatmap_card.body.addWidget(self.heatmap)
         self.heatmap_card.body.addWidget(heat_note)

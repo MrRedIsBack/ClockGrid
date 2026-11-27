@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import textwrap
 import time
 
 from PySide6.QtCore import Qt
@@ -77,7 +78,8 @@ class HistoryTab(QWidget):
                 if s.hit_rate is not None
                 else "no finished weeks"
             )
-            headers.append(f"{g.name}{' (archived)' if g.archived else ''}\n{rate}")
+            name = g.name + (" (archived)" if g.archived else "")
+            headers.append("\n".join(textwrap.wrap(name, 20) or [name]) + f"\n{rate}")
         self.table.setHorizontalHeaderLabels(headers)
 
         row_of = {w: i for i, w in enumerate(weeks)}

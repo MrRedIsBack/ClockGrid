@@ -100,6 +100,9 @@ class ClockCard(QFrame):
         name_font.setPointSizeF(name_font.pointSizeF() * 1.25)
         name_font.setBold(True)
         self.name_label.setFont(name_font)
+        # Room for two lines, so rings line up whether or not a name wraps.
+        self.name_label.setFixedHeight(self.name_label.fontMetrics().lineSpacing() * 2 + 2)
+        self.name_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
 
         menu_button = QToolButton()
         menu_button.setText("⋯")
