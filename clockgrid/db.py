@@ -230,6 +230,14 @@ class Database:
                         (goal_id, self.current_week_start().isoformat(), goal.target_minutes),
                     )
 
+    def reorder_goals(self, goal_ids: list[int]) -> None:
+        """Save a new display order: goal_ids[0] comes first."""
+        with self.conn:
+            self.conn.executemany(
+                "UPDATE goals SET sort_order = ? WHERE id = ?",
+                [(order, gid) for order, gid in enumerate(goal_ids)],
+            )
+
     def delete_goal(self, goal_id: int) -> None:
         """Permanently delete a goal and all of its sessions."""
         with self.conn:

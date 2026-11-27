@@ -24,6 +24,7 @@ leaderboard that shows when one goal is eating the time meant for another.
 ### This week
 - **A clock per goal**, filling towards its weekly target. Go past 100% and a second, darker lap shows the overshoot.
 - **One timer at a time**: starting a goal stops whichever one was running. Timers keep running while the app is closed, since only the start time is stored.
+- **Drag to reorder**: grab a card and drop it where you want it; the order is saved.
 - **Fix-ups**: add, edit or delete sessions by hand for when you forget to press Start. Accidental clicks under a minute are discarded.
 
 ### Leaderboard

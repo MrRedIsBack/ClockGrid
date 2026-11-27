@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from clockgrid.db import Database, Goal
-from clockgrid.ui.clock_card import CARD_WIDTH, ClockCard
+from clockgrid.ui.clock_card import CARD_MIME, CARD_WIDTH, ClockCard
 from clockgrid.ui.dialogs import DEFAULT_COLORS, GoalDialog, SessionsDialog, SettingsDialog
 from clockgrid.ui.history_tab import HistoryTab
 from clockgrid.ui.leaderboard_tab import LeaderboardTab
@@ -65,6 +65,35 @@ def _heading(text: str) -> QLabel:
     return label
 
 
+class CardGrid(QWidget):
+    """Holds the clock cards and accepts them being dropped in a new position."""
+
+    def __init__(self, on_move, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._on_move = on_move  # called with (goal id, position) while a card is dragged
+        self.setAcceptDrops(True)
+
+    @staticmethod
+    def _goal_id(event) -> int | None:
+        mime = event.mimeData()
+        return int(bytes(mime.data(CARD_MIME)).decode()) if mime.hasFormat(CARD_MIME) else None
+
+    def dragEnterEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        if self._goal_id(event) is not None:
+            event.acceptProposedAction()
+
+    def dragMoveEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        goal_id = self._goal_id(event)
+        if goal_id is not None:
+            self._on_move(goal_id, event.position().toPoint())
+            event.acceptProposedAction()
+
+    def dropEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        if self._goal_id(event) is not None:
+            event.setDropAction(Qt.DropAction.MoveAction)
+            event.accept()
+
+
 class MainWindow(QMainWindow):
     def __init__(self, db: Database) -> None:
         super().__init__()
@@ -85,7 +114,7 @@ class MainWindow(QMainWindow):
         header.addStretch(1)
         header.addWidget(self.total_label)
 
-        self.grid_host = QWidget()
+        self.grid_host = CardGrid(self._drag_card_to)
         self.grid = QGridLayout(self.grid_host)
         self.grid.setSpacing(GRID_SPACING)
         self.grid.setContentsMargins(0, 0, 0, 0)
@@ -272,6 +301,7 @@ class MainWindow(QMainWindow):
                 card.edit_requested.connect(self.edit_goal)
                 card.archive_requested.connect(self.archive_goal)
                 card.delete_requested.connect(self.delete_goal)
+                card.drag_finished.connect(self._finish_card_drag)
                 self.cards[g.id] = card
         has_goals = bool(self.goals)
         self.empty_label.setVisible(not has_goals)
@@ -279,6 +309,31 @@ class MainWindow(QMainWindow):
         self._relayout(force=True)
         self.refresh()
         self._refresh_current_tab()
+
+    def _drag_card_to(self, goal_id: int, pos) -> None:
+        """While dragging, move the card into the slot under the cursor so the
+        others shift out of the way."""
+        ids = [g.id for g in self.goals]
+        if goal_id not in ids:
+            return
+        target = next(
+            (i for i, gid in enumerate(ids) if self.cards[gid].geometry().contains(pos)),
+            None,
+        )
+        if target is None:  # empty space after the last card
+            last = self.cards[ids[-1]].geometry()
+            if pos.y() > last.bottom() or (pos.y() >= last.top() and pos.x() > last.right()):
+                target = len(ids) - 1
+        source = ids.index(goal_id)
+        if target is None or target == source:
+            return
+        self.goals.insert(target, self.goals.pop(source))
+        self._relayout(force=True)
+
+    def _finish_card_drag(self, dropped: bool) -> None:
+        if dropped:
+            self.db.reorder_goals([g.id for g in self.goals])
+        self.reload_goals()  # also restores the saved order if the drag was cancelled
 
     def _refresh_current_tab(self) -> None:
         """Leaderboard, History and Stats are recalculated when shown or after data changes,

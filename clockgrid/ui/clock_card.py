@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPalette, QPen, QPixmap, QPolygonF
+from PySide6.QtCore import QMimeData, QPoint, QPointF, QRectF, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QDrag, QFont, QIcon, QPainter, QPalette, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
+    QApplication,
     QFrame,
+    QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
     QMenu,
@@ -20,6 +22,7 @@ from clockgrid.db import Goal
 from clockgrid.weeks import format_clock, format_duration
 
 CARD_WIDTH = 240
+CARD_MIME = "application/x-clockgrid-goal"
 
 
 class ProgressRing(QWidget):
@@ -128,11 +131,14 @@ class ClockCard(QFrame):
     edit_requested = Signal(int)
     archive_requested = Signal(int)
     delete_requested = Signal(int)
+    drag_finished = Signal(bool)  # True if dropped in the grid, False if cancelled
 
     def __init__(self, goal_id: int, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.goal_id = goal_id
         self._style_key: tuple | None = None
+        self._press_pos: QPoint | None = None
+        self.setCursor(Qt.CursorShape.OpenHandCursor)  # hints that cards can be dragged
         self.setObjectName("ClockCard")
         self.setFixedWidth(CARD_WIDTH)
 
@@ -193,6 +199,39 @@ class ClockCard(QFrame):
         self.customContextMenuRequested.connect(
             lambda pos: self._build_menu().exec(self.mapToGlobal(pos))
         )
+
+    # ------------------------------------------------------- drag to reorder
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._press_pos = event.position().toPoint()
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        self._press_pos = None
+        super().mouseReleaseEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        if self._press_pos is None or not event.buttons() & Qt.MouseButton.LeftButton:
+            return super().mouseMoveEvent(event)
+        if (event.position().toPoint() - self._press_pos).manhattanLength() < QApplication.startDragDistance():
+            return
+        hotspot, self._press_pos = self._press_pos, None
+
+        mime = QMimeData()
+        mime.setData(CARD_MIME, str(self.goal_id).encode())
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+        drag.setPixmap(self.grab())
+        drag.setHotSpot(hotspot)
+
+        # Leave a faded copy behind to show where the card will land.
+        fade = QGraphicsOpacityEffect(self)
+        fade.setOpacity(0.3)
+        self.setGraphicsEffect(fade)
+        result = drag.exec(Qt.DropAction.MoveAction)
+        self.setGraphicsEffect(None)
+        self.drag_finished.emit(result == Qt.DropAction.MoveAction)
 
     @staticmethod
     def _icon_button(icon: QIcon, tooltip: str) -> QToolButton:

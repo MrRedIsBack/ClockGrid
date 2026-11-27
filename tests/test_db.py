@@ -29,6 +29,12 @@ def test_add_goal_and_order(db):
     assert a.sort_order < b.sort_order
 
 
+def test_reorder_goals(db):
+    a, b, c = add(db, "A"), add(db, "B"), add(db, "C")
+    db.reorder_goals([c.id, a.id, b.id])
+    assert [g.name for g in db.goals()] == ["C", "A", "B"]
+
+
 def test_add_goal_validation(db):
     with pytest.raises(ValueError):
         db.add_goal("  ", "#000", 60, week_start=WEEK)
