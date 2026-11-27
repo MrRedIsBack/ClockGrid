@@ -5,11 +5,12 @@ from __future__ import annotations
 import time
 from datetime import date
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtCore import QEvent, Qt, QTimer
+from PySide6.QtGui import QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QButtonGroup,
     QFrame,
+    QGraphicsDropShadowEffect,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -41,6 +42,17 @@ QFrame#Sidebar { background: rgba(127, 127, 127, 0.07); border: none; border-rig
 }
 #Sidebar QPushButton:hover { background: rgba(127, 127, 127, 0.15); }
 #Sidebar QPushButton:checked { background: rgba(127, 127, 127, 0.25); font-weight: bold; }
+"""
+
+ADD_BUTTON_SIZE = 56
+ADD_BUTTON_MARGIN = 24
+ADD_BUTTON_STYLE = """
+QPushButton#AddGoal {
+    background: palette(base); border: 1px solid rgba(127, 127, 127, 0.35);
+    border-radius: 14px; font-size: 26px; padding-bottom: 3px;
+}
+QPushButton#AddGoal:hover { background: palette(alternate-base); border-color: rgba(127, 127, 127, 0.6); }
+QPushButton#AddGoal:pressed { background: rgba(127, 127, 127, 0.25); }
 """
 
 
@@ -80,7 +92,7 @@ class MainWindow(QMainWindow):
         self.grid.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
 
         self.empty_label = QLabel(
-            "No goals yet.\n\nClick “+ New goal” to create your first clock,\n"
+            "No goals yet.\n\nClick + in the bottom-right corner to create your first clock,\n"
             "for example “Studying – 20 hours a week”."
         )
         self.empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -117,6 +129,22 @@ class MainWindow(QMainWindow):
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(28, 20, 28, 20)
         content_layout.addWidget(self.pages)
+
+        # Floating "+" in the bottom-right corner, above whatever page is shown.
+        self.add_button = QPushButton("+", content)
+        self.add_button.setObjectName("AddGoal")
+        self.add_button.setStyleSheet(ADD_BUTTON_STYLE)
+        self.add_button.setFixedSize(ADD_BUTTON_SIZE, ADD_BUTTON_SIZE)
+        self.add_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.add_button.setToolTip("New goal (Ctrl+N)")
+        self.add_button.clicked.connect(self.add_goal)
+        shadow = QGraphicsDropShadowEffect(self.add_button)
+        shadow.setBlurRadius(24)
+        shadow.setOffset(0, 4)
+        shadow.setColor(QColor(0, 0, 0, 90))
+        self.add_button.setGraphicsEffect(shadow)
+        self._content = content
+        content.installEventFilter(self)
 
         central = QWidget()
         row = QHBoxLayout(central)
@@ -170,9 +198,6 @@ class MainWindow(QMainWindow):
         title.setContentsMargins(12, 0, 0, 12)
         layout.addWidget(title)
 
-        button("+  New goal", self.add_goal)
-        layout.addSpacing(12)
-
         self.nav = QButtonGroup(self)
         self.nav.setExclusive(True)
         for index, text in enumerate(["This week", "Leaderboard", "History", "Stats"]):
@@ -192,6 +217,15 @@ class MainWindow(QMainWindow):
         )
         button("Settings", self.open_settings)
         return sidebar
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802 (Qt naming)
+        if obj is self._content and event.type() == QEvent.Type.Resize:
+            self.add_button.move(
+                obj.width() - ADD_BUTTON_SIZE - ADD_BUTTON_MARGIN,
+                obj.height() - ADD_BUTTON_SIZE - ADD_BUTTON_MARGIN,
+            )
+            self.add_button.raise_()
+        return super().eventFilter(obj, event)
 
     def _fill_archived_menu(self) -> None:
         self.archived_menu.clear()

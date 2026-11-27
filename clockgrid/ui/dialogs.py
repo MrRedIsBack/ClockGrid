@@ -9,6 +9,7 @@ from PySide6.QtCore import QDateTime, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QButtonGroup,
     QColorDialog,
     QComboBox,
     QDateTimeEdit,
@@ -29,6 +30,7 @@ from PySide6.QtWidgets import (
 )
 
 from clockgrid.db import Database, Goal, Session
+from clockgrid.ui.clock_card import ProgressRing
 from clockgrid.weeks import WEEKDAY_NAMES, format_duration, format_week_range, week_bounds
 
 DEFAULT_COLORS = ["#4f8cff", "#f2994a", "#27ae60", "#bb6bd9", "#eb5757", "#2d9cdb", "#f2c94c", "#6fcf97"]
@@ -42,58 +44,209 @@ def _buttons(dialog: QDialog, ok_handler) -> QDialogButtonBox:
     return box
 
 
+TARGET_PRESETS = [1, 3, 5, 10, 20]
+
+GOAL_DIALOG_STYLE = """
+QPushButton#Chip {
+    border: 1px solid rgba(127, 127, 127, 0.35); border-radius: 12px;
+    padding: 3px 12px; background: transparent;
+}
+QPushButton#Chip:hover { background: rgba(127, 127, 127, 0.18); }
+"""
+
+
+def _section(text: str) -> QLabel:
+    label = QLabel(text)
+    font = label.font()
+    font.setBold(True)
+    label.setFont(font)
+    return label
+
+
 class GoalDialog(QDialog):
-    def __init__(self, parent: QWidget | None = None, goal: Goal | None = None, default_color: str = DEFAULT_COLORS[0]) -> None:
+    """Create or edit a goal, with a live preview of its clock."""
+
+    def __init__(
+        self, parent: QWidget | None = None, goal: Goal | None = None, default_color: str = DEFAULT_COLORS[0]
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Edit goal" if goal else "New goal")
-        self.setMinimumWidth(360)
+        self.setMinimumWidth(560)
+        self.setStyleSheet(GOAL_DIALOG_STYLE)
+        self.color = QColor(goal.color if goal else default_color)
 
+        title = QLabel("Edit goal" if goal else "New goal")
+        title_font = title.font()
+        title_font.setPointSizeF(title_font.pointSizeF() * 1.5)
+        title_font.setBold(True)
+        title.setFont(title_font)
+        subtitle = QLabel("How much time do you want to spend on this each week?")
+        subtitle.setEnabled(False)
+
+        # Live preview of the clock
+        self.preview = ProgressRing()
+        self.preview.setFixedSize(160, 160)
+        self.preview_name = QLabel()
+        self.preview_name.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview_name.setWordWrap(True)
+        self.preview_name.setFixedWidth(160)
+        preview_font = self.preview_name.font()
+        preview_font.setBold(True)
+        self.preview_name.setFont(preview_font)
+        preview = QVBoxLayout()
+        preview.addWidget(self.preview)
+        preview.addWidget(self.preview_name)
+        preview.addStretch(1)
+
+        # Name
         self.name_edit = QLineEdit(goal.name if goal else "")
-        self.name_edit.setPlaceholderText("e.g. Studying")
+        self.name_edit.setPlaceholderText("e.g. C++ (learncpp.com)")
+        self.name_edit.setMaxLength(60)
+        self.name_edit.setMinimumHeight(32)
 
+        # Weekly target, with one-click presets
         self.hours_spin = QDoubleSpinBox()
         self.hours_spin.setRange(0.25, 168)
         self.hours_spin.setSingleStep(0.5)
         self.hours_spin.setDecimals(2)
-        self.hours_spin.setSuffix("  hours / week")
+        self.hours_spin.setSuffix(" h")
+        self.hours_spin.setMinimumHeight(32)
+        self.hours_spin.setMinimumWidth(110)
         self.hours_spin.setValue(goal.target_minutes / 60 if goal else 5)
+        self.per_day = QLabel()
+        self.per_day.setEnabled(False)
+        target_row = QHBoxLayout()
+        target_row.addWidget(self.hours_spin)
+        target_row.addWidget(self.per_day)
+        target_row.addStretch(1)
+        presets = QHBoxLayout()
+        presets.setSpacing(6)
+        for hours in TARGET_PRESETS:
+            chip = QPushButton(f"{hours}h")
+            chip.setObjectName("Chip")
+            chip.setCursor(Qt.CursorShape.PointingHandCursor)
+            chip.clicked.connect(lambda _=False, h=hours: self.hours_spin.setValue(h))
+            presets.addWidget(chip)
+        presets.addStretch(1)
 
-        self.color = QColor(goal.color if goal else default_color)
-        self.color_button = QPushButton()
-        self.color_button.setFixedSize(60, 26)
-        self.color_button.clicked.connect(self._pick_color)
-        self._show_color()
+        # Colour swatches, plus a custom colour picker
+        self.swatches = QButtonGroup(self)
+        self.swatches.setExclusive(True)
+        swatch_row = QHBoxLayout()
+        swatch_row.setSpacing(8)
+        for color in DEFAULT_COLORS:
+            swatch = self._swatch(color)
+            swatch.clicked.connect(lambda _=False, c=color: self._set_color(QColor(c)))
+            self.swatches.addButton(swatch)
+            swatch_row.addWidget(swatch)
+        self.custom_swatch = self._swatch(None)
+        self.custom_swatch.setText("…")
+        self.custom_swatch.setToolTip("Pick a custom colour")
+        self.custom_swatch.clicked.connect(self._pick_custom)
+        self.swatches.addButton(self.custom_swatch)
+        swatch_row.addWidget(self.custom_swatch)
+        swatch_row.addStretch(1)
+        self._check_current_swatch()
 
-        form = QFormLayout()
-        form.addRow("Name", self.name_edit)
-        form.addRow("Weekly target", self.hours_spin)
-        form.addRow("Colour", self.color_button)
+        fields = QVBoxLayout()
+        fields.setSpacing(6)
+        fields.addWidget(_section("Name"))
+        fields.addWidget(self.name_edit)
+        fields.addSpacing(10)
+        fields.addWidget(_section("Weekly target"))
+        fields.addLayout(target_row)
+        fields.addLayout(presets)
+        fields.addSpacing(10)
+        fields.addWidget(_section("Colour"))
+        fields.addLayout(swatch_row)
+        fields.addStretch(1)
+
+        body = QHBoxLayout()
+        body.setSpacing(24)
+        body.addLayout(preview)
+        body.addLayout(fields, 1)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        self.ok_button = buttons.addButton(
+            "Save changes" if goal else "Create goal", QDialogButtonBox.ButtonRole.AcceptRole
+        )
+        self.ok_button.setDefault(True)
+        self.ok_button.setMinimumHeight(32)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
 
         layout = QVBoxLayout(self)
-        layout.addLayout(form)
+        layout.setContentsMargins(24, 20, 24, 18)
+        layout.setSpacing(6)
+        layout.addWidget(title)
+        layout.addWidget(subtitle)
+        layout.addSpacing(14)
+        layout.addLayout(body)
         if goal:
             note = QLabel("A new target applies from this week on; past weeks keep their old target.")
             note.setWordWrap(True)
             note.setEnabled(False)
             layout.addWidget(note)
-        layout.addWidget(_buttons(self, self._accept))
+        layout.addSpacing(10)
+        layout.addWidget(buttons)
 
-    def _pick_color(self) -> None:
-        color = QColorDialog.getColor(self.color, self, "Goal colour")
-        if color.isValid():
-            self.color = color
-            self._show_color()
+        self.name_edit.textChanged.connect(self._update)
+        self.hours_spin.valueChanged.connect(self._update)
+        self.name_edit.setFocus()
+        self._update()
 
-    def _show_color(self) -> None:
-        self.color_button.setStyleSheet(
-            f"background: {self.color.name()}; border: 1px solid palette(mid); border-radius: 4px;"
+    @staticmethod
+    def _swatch(color: str | None) -> QPushButton:
+        button = QPushButton()
+        button.setCheckable(True)
+        button.setFixedSize(28, 28)
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        GoalDialog._paint_swatch(button, color)
+        return button
+
+    @staticmethod
+    def _paint_swatch(button: QPushButton, color: str | None) -> None:
+        fill = color or "transparent"
+        border = "rgba(127, 127, 127, 0.5)" if color is None else fill
+        button.setStyleSheet(
+            f"QPushButton {{ background: {fill}; border: 2px solid {border}; border-radius: 14px; }}"
+            "QPushButton:checked { border: 3px solid palette(text); }"
         )
 
-    def _accept(self) -> None:
-        if not self.name_edit.text().strip():
-            QMessageBox.warning(self, "Missing name", "Please give the goal a name.")
-            return
-        self.accept()
+    def _check_current_swatch(self) -> None:
+        for button, color in zip(self.swatches.buttons(), DEFAULT_COLORS):
+            if QColor(color) == self.color:
+                button.setChecked(True)
+                return
+        self._paint_swatch(self.custom_swatch, self.color.name())
+        self.custom_swatch.setText("")
+        self.custom_swatch.setChecked(True)
+
+    def _set_color(self, color: QColor) -> None:
+        self.color = color
+        self._update()
+
+    def _pick_custom(self) -> None:
+        color = QColorDialog.getColor(self.color, self, "Goal colour")
+        if color.isValid():
+            self._paint_swatch(self.custom_swatch, color.name())
+            self.custom_swatch.setText("")
+            self._set_color(color)
+        self._check_current_swatch()
+
+    def _update(self) -> None:
+        name = self.name_edit.text().strip()
+        hours = self.hours_spin.value()
+        self.preview_name.setText(name or "Your goal")
+        self.preview.center_text = format_duration(round(hours * 3600))
+        self.preview.set_values(0.65, self.color.name())
+        self.per_day.setText(f"≈ {format_duration(round(hours * 3600 / 7))} a day")
+        self.ok_button.setEnabled(bool(name))
+        self.ok_button.setStyleSheet(
+            f"QPushButton {{ background: {self.color.name()}; color: white; border: none;"
+            " border-radius: 6px; padding: 6px 18px; font-weight: bold; }"
+            "QPushButton:disabled { background: rgba(127, 127, 127, 0.3); color: rgba(255, 255, 255, 0.6); }"
+        )
 
     def values(self) -> tuple[str, str, int]:
         return self.name_edit.text().strip(), self.color.name(), round(self.hours_spin.value() * 60)

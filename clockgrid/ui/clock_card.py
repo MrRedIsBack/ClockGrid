@@ -32,6 +32,7 @@ class ProgressRing(QWidget):
         super().__init__(parent)
         self._progress = 0.0
         self._color = QColor("#4f8cff")
+        self.center_text: str | None = None  # shown instead of the percentage when set
         self.setMinimumSize(150, 150)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
@@ -74,9 +75,12 @@ class ProgressRing(QWidget):
         font.setPixelSize(max(12, int(side / 6)))
         font.setBold(True)
         p.setFont(font)
-        label = f"{round(self._progress * 100)}%"
-        if self._progress >= 1.0:
-            label += " ✓"
+        if self.center_text is not None:
+            label = self.center_text
+        else:
+            label = f"{round(self._progress * 100)}%"
+            if self._progress >= 1.0:
+                label += " ✓"
         p.drawText(rect, Qt.AlignmentFlag.AlignCenter, label)
         p.end()
 
