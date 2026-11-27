@@ -27,6 +27,7 @@ from clockgrid.db import Database, Goal
 from clockgrid.ui.clock_card import CARD_WIDTH, ClockCard
 from clockgrid.ui.dialogs import DEFAULT_COLORS, GoalDialog, SessionsDialog, SettingsDialog
 from clockgrid.ui.history_tab import HistoryTab
+from clockgrid.ui.leaderboard_tab import LeaderboardTab
 from clockgrid.ui.stats_tab import StatsTab
 from clockgrid.weeks import format_clock, format_duration, format_week_range
 
@@ -99,10 +100,16 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.scroll, 1)
 
         # ---- Pages
+        self.leaderboard_tab = LeaderboardTab(db)
         self.history_tab = HistoryTab(db)
         self.stats_tab = StatsTab(db)
         self.pages = QStackedWidget()
-        for page in (clocks_page, self._titled("History", self.history_tab), self._titled("Stats", self.stats_tab)):
+        for page in (
+            clocks_page,
+            self._titled("Leaderboard", self.leaderboard_tab),
+            self._titled("History", self.history_tab),
+            self._titled("Stats", self.stats_tab),
+        ):
             self.pages.addWidget(page)
         self.pages.currentChanged.connect(self._refresh_current_tab)
 
@@ -168,7 +175,7 @@ class MainWindow(QMainWindow):
 
         self.nav = QButtonGroup(self)
         self.nav.setExclusive(True)
-        for index, text in enumerate(["This week", "History", "Stats"]):
+        for index, text in enumerate(["This week", "Leaderboard", "History", "Stats"]):
             b = button(text)
             b.setCheckable(True)
             self.nav.addButton(b, index)
@@ -240,9 +247,9 @@ class MainWindow(QMainWindow):
         self._refresh_current_tab()
 
     def _refresh_current_tab(self) -> None:
-        """History and Stats are recalculated when shown or after data changes,
+        """Leaderboard, History and Stats are recalculated when shown or after data changes,
         not every second."""
-        page = {1: self.history_tab, 2: self.stats_tab}.get(self.pages.currentIndex())
+        page = {1: self.leaderboard_tab, 2: self.history_tab, 3: self.stats_tab}.get(self.pages.currentIndex())
         if page:
             page.refresh()
 

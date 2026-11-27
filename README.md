@@ -43,10 +43,11 @@ Your data is stored in `%APPDATA%\ClockGrid\clockgrid.db`
 
 ### History and stats
 
+- **Leaderboard**: goals ranked by the average % of their weekly target you reach, so you can see
+  which ones are falling behind and keep them balanced.
 - **History** tab: every week since you started, with each goal marked hit (✓), missed (✗) or in progress, and a hit rate per goal.
 - **Stats** tab, filterable by goal and time range (last 4/12/26 weeks or all time):
   - Hit rate, average completion, current and best streaks, total time and average session length.
-  - With all goals selected: a side-by-side goal comparison.
   - A week-by-week chart of time worked against the target.
   - A heatmap of when you work, by weekday and hour.
   - Written insights: your most and least reliable goals, whether you're trending up or down,

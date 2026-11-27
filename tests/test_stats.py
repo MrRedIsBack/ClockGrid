@@ -106,6 +106,30 @@ def test_combine(db):
     assert [r.complete for r in combined] == [True, True, True, False]
 
 
+def test_leaderboard_ranks_by_average_completion(db):
+    cpp = make_goal(db, 60, "learncpp.com")
+    other = make_goal(db, 120, "Other")
+    for w in WEEKS[:3]:
+        log(db, cpp, w, 1)  # 100% every week
+        log(db, other, w, 1, start_hour=14)  # 50% every week
+    results = stats.weekly_results(db, [cpp, other], CURRENT, NOW)
+    board = stats.leaderboard([other, cpp], results)
+    assert [e.goal.name for e in board] == ["learncpp.com", "Other"]
+    assert board[0].completion == pytest.approx(1.0)
+    assert board[1].completion == pytest.approx(0.5)
+    assert board[0].weeks == 3 and board[0].hit_rate == 1.0
+
+
+def test_leaderboard_puts_new_goals_last(db):
+    old = make_goal(db, 60, "Old")
+    log(db, old, WEEKS[0], 0.5)  # 50%
+    new = db.add_goal("New", "#000", 60, week_start=CURRENT, created_at=NOW)
+    log(db, new, CURRENT, 1)  # 100% so far, but no finished week yet
+    results = stats.weekly_results(db, [old, new], CURRENT, NOW)
+    board = stats.leaderboard([old, new], results)
+    assert [(e.goal.name, e.weeks) for e in board] == [("Old", 3), ("New", 0)]
+
+
 def test_patterns_split_sessions_by_hour(db):
     g = make_goal(db)
     monday = WEEKS[0]

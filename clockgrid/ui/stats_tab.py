@@ -1,4 +1,4 @@
-"""Stats tab: summary tiles, a weekly chart, a when-you-work heatmap and insights."""
+"""Stats page: summary tiles, insights, a weekly chart and a when-you-work heatmap."""
 
 from __future__ import annotations
 
@@ -8,16 +8,12 @@ from datetime import date, timedelta
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QIcon, QPixmap
 from PySide6.QtWidgets import (
-    QAbstractItemView,
     QComboBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QScrollArea,
-    QTableWidget,
-    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -126,15 +122,6 @@ class StatsTab(QWidget):
         self.chart_card.body.addWidget(self.chart)
         self.chart_card.body.addWidget(chart_note)
 
-        self.goals_card = Card("Goals compared")
-        self.goals_table = QTableWidget()
-        self.goals_table.verticalHeader().setVisible(False)
-        self.goals_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.goals_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-        self.goals_table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.goals_table.setFrameShape(QFrame.Shape.NoFrame)
-        self.goals_card.body.addWidget(self.goals_table)
-
         self.heatmap_card = Card("When you work")
         self.heatmap = Heatmap()
         heat_note = QLabel("Darker means more time. Hover a cell for details.")
@@ -149,7 +136,6 @@ class StatsTab(QWidget):
         body.addLayout(tiles)
         body.addWidget(self.insights_card)
         body.addWidget(self.chart_card)
-        body.addWidget(self.goals_card)
         body.addWidget(self.heatmap_card)
         body.addStretch(1)
 
@@ -233,10 +219,6 @@ class StatsTab(QWidget):
         self.chart_card.title.setText("Week by week" + (" (all goals combined)" if goal_id is None else ""))
         self.chart.set_data(combined, color)
 
-        self.goals_card.setVisible(goal_id is None and len(goals) > 1)
-        if goal_id is None:
-            self._fill_goals_table(list(summaries.values()))
-
         self.heatmap.set_data(pattern.grid, self.db.week_start_day, color)
 
     def _fill_goal_tiles(self, s: stats.Summary, results: list[stats.WeekResult], p: stats.Patterns) -> None:
@@ -287,32 +269,3 @@ class StatsTab(QWidget):
             format_duration(p.avg_session) if p.session_count else "–",
             f"longest {format_duration(p.longest_session)}",
         )
-
-    def _fill_goals_table(self, rows: list[tuple[Goal, stats.Summary]]) -> None:
-        rows = sorted(rows, key=lambda gs: (gs[1].hit_rate or 0, gs[1].avg_completion or 0), reverse=True)
-        headers = ["Goal", "Hit rate", "Avg completion", "Current streak", "Best streak", "Total time"]
-        table = self.goals_table
-        table.clear()
-        table.setColumnCount(len(headers))
-        table.setHorizontalHeaderLabels(headers)
-        table.setRowCount(len(rows))
-        for row, (g, s) in enumerate(rows):
-            cells = [
-                g.name + ("  (archived)" if g.archived else ""),
-                f"{_pct(s.hit_rate)}  ({s.weeks_hit}/{s.weeks_completed})",
-                _pct(s.avg_completion),
-                _weeks(s.current_streak),
-                _weeks(s.best_streak),
-                format_duration(s.total_worked),
-            ]
-            for col, text in enumerate(cells):
-                item = QTableWidgetItem(text)
-                if col == 0:
-                    item.setIcon(_swatch(g.color))
-                else:
-                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                table.setItem(row, col, item)
-        header = table.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        height = header.height() + sum(table.rowHeight(r) for r in range(len(rows))) + 4
-        table.setFixedHeight(max(height, 60))

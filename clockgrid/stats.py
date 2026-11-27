@@ -164,6 +164,37 @@ def summarize(results: list[WeekResult]) -> Summary:
     )
 
 
+# ------------------------------------------------------------ leaderboard
+
+
+@dataclass(frozen=True)
+class LeaderEntry:
+    goal: Goal
+    completion: float  # average share of the weekly target reached
+    weeks: int  # finished weeks averaged; 0 means only this week so far
+    hit_rate: float | None
+
+
+def leaderboard(goals: list[Goal], results_by_goal: dict[int, list[WeekResult]]) -> list[LeaderEntry]:
+    """Goals ranked by average completion of finished weeks, highest first.
+
+    Goals with no finished week yet are ranked after the rest, by how far
+    they are through the current week.
+    """
+    entries = []
+    for g in goals:
+        results = results_by_goal.get(g.id, [])
+        done = [r for r in results if r.complete]
+        live = [r for r in results if not r.complete]
+        if done:
+            s = summarize(results)
+            entries.append(LeaderEntry(g, s.avg_completion, len(done), s.hit_rate))
+        elif live:
+            entries.append(LeaderEntry(g, live[-1].completion, 0, None))
+    entries.sort(key=lambda e: (e.weeks == 0, -e.completion))
+    return entries
+
+
 # --------------------------------------------------------------- patterns
 
 
