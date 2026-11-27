@@ -12,12 +12,16 @@ dependencies = ["PySide6>=6.6"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+build = ["pyinstaller>=6"]
 
 [project.gui-scripts]
 clockgrid = "clockgrid.app:main"
 
 [tool.setuptools.packages.find]
 include = ["clockgrid*"]
+
+[tool.setuptools.package-data]
+clockgrid = ["assets/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
