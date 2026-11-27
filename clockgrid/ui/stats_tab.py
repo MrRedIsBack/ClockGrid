@@ -219,7 +219,7 @@ class StatsTab(QWidget):
         if goal_id is not None and goals:
             self._fill_goal_tiles(summaries[goal_id][1], results[goal_id], pattern)
         else:
-            self._fill_all_tiles(results, pattern)
+            self._fill_all_tiles(results, combined, pattern)
 
         lines = stats.insights(summaries, combined, pattern, self.db.week_start_day)
         if not any(r.complete for r in combined):
@@ -260,27 +260,32 @@ class StatsTab(QWidget):
             f"{p.session_count} sessions · longest {format_duration(p.longest_session)}",
         )
 
-    def _fill_all_tiles(self, results: dict[int, list[stats.WeekResult]], p: stats.Patterns) -> None:
+    def _fill_all_tiles(
+        self,
+        results: dict[int, list[stats.WeekResult]],
+        combined: list[stats.WeekResult],
+        p: stats.Patterns,
+    ) -> None:
         flat = [r for rs in results.values() for r in rs]
         overall = stats.summarize(flat)  # hit rate and average across all goal-weeks
-        perfect = stats.perfect_weeks(results)
-        finished = [hit for _, hit, complete in perfect if complete]
-        live = [hit for _, hit, complete in perfect if not complete]
-        current, best = stats.streaks(finished, bool(live) and live[-1])
+        this_week = next((r for r in combined if not r.complete), None)
         t = self.tiles
         t[0].set("Hit rate", _pct(overall.hit_rate), f"{overall.weeks_hit} of {overall.weeks_completed} goal-weeks hit")
         t[1].set("Average completion", _pct(overall.avg_completion), "of each goal's target")
-        t[2].set(
-            "Perfect weeks",
-            f"{sum(finished)} of {len(finished)}" if finished else "–",
-            "weeks where every goal was hit",
-        )
-        t[3].set("Perfect-week streak", _weeks(current), f"best: {_weeks(best)}")
-        t[4].set("Total time", format_duration(overall.total_worked), "in this range")
+        if this_week:
+            t[2].set(
+                "This week",
+                _pct(this_week.completion),
+                f"{format_duration(this_week.worked)} of {format_duration(this_week.target)}",
+            )
+        else:
+            t[2].set("This week", "–", "no goals this week")
+        t[3].set("Total time", format_duration(overall.total_worked), "in this range")
+        t[4].set("Sessions", str(p.session_count), "in this range")
         t[5].set(
             "Average session",
             format_duration(p.avg_session) if p.session_count else "–",
-            f"{p.session_count} sessions · longest {format_duration(p.longest_session)}",
+            f"longest {format_duration(p.longest_session)}",
         )
 
     def _fill_goals_table(self, rows: list[tuple[Goal, stats.Summary]]) -> None:

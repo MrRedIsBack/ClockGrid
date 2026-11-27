@@ -95,17 +95,15 @@ def test_archived_goal_stops_at_its_last_week(db):
     assert stats.tracked_weeks(db, g, CURRENT) == WEEKS[:2]
 
 
-def test_combine_and_perfect_weeks(db):
+def test_combine(db):
     a = make_goal(db, 60, "A")
     b = make_goal(db, 120, "B")
     log(db, a, WEEKS[0], 1)
-    log(db, b, WEEKS[0], 2, start_hour=14)  # both hit
-    log(db, a, WEEKS[1], 1)  # only A hit
+    log(db, b, WEEKS[0], 2, start_hour=14)
     results = stats.weekly_results(db, [a, b], CURRENT, NOW)
     combined = stats.combine(results)
     assert combined[0].worked == 3 * HOUR and combined[0].target_minutes == 180
-    perfect = stats.perfect_weeks(results)
-    assert [p[1] for p in perfect[:2]] == [True, False]
+    assert [r.complete for r in combined] == [True, True, True, False]
 
 
 def test_patterns_split_sessions_by_hour(db):

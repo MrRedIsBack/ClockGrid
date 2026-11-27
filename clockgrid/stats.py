@@ -131,18 +131,6 @@ def combine(results_by_goal: dict[int, list[WeekResult]]) -> list[WeekResult]:
     ]
 
 
-def perfect_weeks(results_by_goal: dict[int, list[WeekResult]]) -> list[tuple[date, bool, bool]]:
-    """(week, every goal hit, week finished) for each week, oldest first."""
-    by_week: dict[date, list[WeekResult]] = {}
-    for results in results_by_goal.values():
-        for r in results:
-            by_week.setdefault(r.week_start, []).append(r)
-    return [
-        (week, all(r.hit for r in rs), all(r.complete for r in rs))
-        for week, rs in sorted(by_week.items())
-    ]
-
-
 # ---------------------------------------------------------------- summary
 
 

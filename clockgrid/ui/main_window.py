@@ -1,4 +1,4 @@
-"""Main window: the week header and a responsive grid of goal clocks."""
+"""Main window: a sidebar for navigation and the pages it switches between."""
 
 from __future__ import annotations
 
@@ -6,18 +6,19 @@ import time
 from datetime import date
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QButtonGroup,
+    QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QMainWindow,
     QMenu,
     QMessageBox,
+    QPushButton,
     QScrollArea,
-    QTabWidget,
-    QToolBar,
-    QToolButton,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -30,6 +31,25 @@ from clockgrid.ui.stats_tab import StatsTab
 from clockgrid.weeks import format_clock, format_duration, format_week_range
 
 GRID_SPACING = 16
+SIDEBAR_WIDTH = 200
+
+SIDEBAR_STYLE = """
+QFrame#Sidebar { background: rgba(127, 127, 127, 0.07); border: none; border-right: 1px solid rgba(127, 127, 127, 0.25); }
+#Sidebar QPushButton {
+    text-align: left; padding: 8px 12px; border: none; border-radius: 8px; background: transparent;
+}
+#Sidebar QPushButton:hover { background: rgba(127, 127, 127, 0.15); }
+#Sidebar QPushButton:checked { background: rgba(127, 127, 127, 0.25); font-weight: bold; }
+"""
+
+
+def _heading(text: str) -> QLabel:
+    label = QLabel(text)
+    font = label.font()
+    font.setPointSizeF(font.pointSizeF() * 1.5)
+    font.setBold(True)
+    label.setFont(font)
+    return label
 
 
 class MainWindow(QMainWindow):
@@ -42,16 +62,11 @@ class MainWindow(QMainWindow):
         self._week: date | None = None
 
         self.setWindowTitle("ClockGrid")
-        self.resize(1040, 680)
-        self._build_toolbar()
+        self.resize(1100, 700)
 
-        self.week_label = QLabel()
-        week_font = self.week_label.font()
-        week_font.setPointSizeF(week_font.pointSizeF() * 1.5)
-        week_font.setBold(True)
-        self.week_label.setFont(week_font)
+        # ---- This week page
+        self.week_label = _heading("")
         self.total_label = QLabel()
-
         header = QHBoxLayout()
         header.addWidget(self.week_label)
         header.addStretch(1)
@@ -64,7 +79,7 @@ class MainWindow(QMainWindow):
         self.grid.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
 
         self.empty_label = QLabel(
-            "No goals yet.\n\nClick “+ Add goal” to create your first clock,\n"
+            "No goals yet.\n\nClick “+ New goal” to create your first clock,\n"
             "for example “Studying – 20 hours a week”."
         )
         self.empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -77,26 +92,34 @@ class MainWindow(QMainWindow):
 
         clocks_page = QWidget()
         layout = QVBoxLayout(clocks_page)
-        layout.setContentsMargins(0, 12, 0, 0)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(16)
         layout.addLayout(header)
         layout.addWidget(self.empty_label, 1)
         layout.addWidget(self.scroll, 1)
 
+        # ---- Pages
         self.history_tab = HistoryTab(db)
         self.stats_tab = StatsTab(db)
-        self.tabs = QTabWidget()
-        self.tabs.setDocumentMode(True)
-        self.tabs.addTab(clocks_page, "This week")
-        self.tabs.addTab(self.history_tab, "History")
-        self.tabs.addTab(self.stats_tab, "Stats")
-        self.tabs.currentChanged.connect(self._refresh_current_tab)
+        self.pages = QStackedWidget()
+        for page in (clocks_page, self._titled("History", self.history_tab), self._titled("Stats", self.stats_tab)):
+            self.pages.addWidget(page)
+        self.pages.currentChanged.connect(self._refresh_current_tab)
+
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(28, 20, 28, 20)
+        content_layout.addWidget(self.pages)
 
         central = QWidget()
-        outer = QVBoxLayout(central)
-        outer.setContentsMargins(24, 8, 24, 16)
-        outer.addWidget(self.tabs)
+        row = QHBoxLayout(central)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(0)
+        row.addWidget(self._build_sidebar())
+        row.addWidget(content, 1)
         self.setCentralWidget(central)
+
+        QShortcut(QKeySequence("Ctrl+N"), self, self.add_goal)
 
         self.reload_goals()
         self.ticker = QTimer(self)
@@ -106,32 +129,62 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------- layout
 
-    def _build_toolbar(self) -> None:
-        bar = QToolBar("Main")
-        bar.setMovable(False)
-        bar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-        self.addToolBar(bar)
+    @staticmethod
+    def _titled(title: str, widget: QWidget) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(_heading(title))
+        layout.addWidget(widget, 1)
+        return page
 
-        add = QAction("+ Add goal", self)
-        add.setShortcut("Ctrl+N")
-        add.triggered.connect(self.add_goal)
-        bar.addAction(add)
+    def _build_sidebar(self) -> QFrame:
+        sidebar = QFrame()
+        sidebar.setObjectName("Sidebar")
+        sidebar.setFixedWidth(SIDEBAR_WIDTH)
+        sidebar.setStyleSheet(SIDEBAR_STYLE)
+        layout = QVBoxLayout(sidebar)
+        layout.setContentsMargins(10, 16, 10, 12)
+        layout.setSpacing(2)
 
-        sessions = QAction("Sessions", self)
-        sessions.triggered.connect(self.open_sessions)
-        bar.addAction(sessions)
+        def button(text: str, handler=None) -> QPushButton:
+            b = QPushButton(text)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            if handler:
+                b.clicked.connect(handler)
+            layout.addWidget(b)
+            return b
 
+        title = QLabel("ClockGrid")
+        font = title.font()
+        font.setPointSizeF(font.pointSizeF() * 1.2)
+        font.setBold(True)
+        title.setFont(font)
+        title.setContentsMargins(12, 0, 0, 12)
+        layout.addWidget(title)
+
+        button("+  New goal", self.add_goal)
+        layout.addSpacing(12)
+
+        self.nav = QButtonGroup(self)
+        self.nav.setExclusive(True)
+        for index, text in enumerate(["This week", "History", "Stats"]):
+            b = button(text)
+            b.setCheckable(True)
+            self.nav.addButton(b, index)
+        self.nav.button(0).setChecked(True)
+        self.nav.idClicked.connect(self.pages.setCurrentIndex)
+
+        layout.addStretch(1)
+        button("Sessions", self.open_sessions)
         self.archived_menu = QMenu(self)
         self.archived_menu.aboutToShow.connect(self._fill_archived_menu)
-        archived = QToolButton()
-        archived.setText("Archived")
-        archived.setMenu(self.archived_menu)
-        archived.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        bar.addWidget(archived)
-
-        settings = QAction("Settings", self)
-        settings.triggered.connect(self.open_settings)
-        bar.addAction(settings)
+        archived = button("Archived")
+        archived.clicked.connect(
+            lambda: self.archived_menu.exec(archived.mapToGlobal(archived.rect().topRight()))
+        )
+        button("Settings", self.open_settings)
+        return sidebar
 
     def _fill_archived_menu(self) -> None:
         self.archived_menu.clear()
@@ -189,8 +242,8 @@ class MainWindow(QMainWindow):
     def _refresh_current_tab(self) -> None:
         """History and Stats are recalculated when shown or after data changes,
         not every second."""
-        page = self.tabs.currentWidget()
-        if page in (self.history_tab, self.stats_tab):
+        page = {1: self.history_tab, 2: self.stats_tab}.get(self.pages.currentIndex())
+        if page:
             page.refresh()
 
     def refresh(self) -> None:
