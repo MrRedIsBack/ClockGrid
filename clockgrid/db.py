@@ -74,6 +74,7 @@ class Goal:
     target_minutes: int
     archived: bool
     sort_order: int
+    created_at: int = 0
 
 
 @dataclass(frozen=True)
@@ -100,6 +101,7 @@ def _goal(row: sqlite3.Row) -> Goal:
         target_minutes=row["target_minutes"],
         archived=bool(row["archived"]),
         sort_order=row["sort_order"],
+        created_at=row["created_at"],
     )
 
 
@@ -161,7 +163,13 @@ class Database:
         return _goal(row) if row else None
 
     def add_goal(
-        self, name: str, color: str, target_minutes: int, *, week_start: date | None = None
+        self,
+        name: str,
+        color: str,
+        target_minutes: int,
+        *,
+        week_start: date | None = None,
+        created_at: int | None = None,
     ) -> Goal:
         name = name.strip()
         if not name:
@@ -176,7 +184,7 @@ class Database:
             cur = self.conn.execute(
                 "INSERT INTO goals (name, color, target_minutes, sort_order, created_at) "
                 "VALUES (?, ?, ?, ?, ?)",
-                (name, color, target_minutes, next_order, _now()),
+                (name, color, target_minutes, next_order, created_at if created_at is not None else _now()),
             )
             goal_id = cur.lastrowid
             self._set_week_target(goal_id, week_start, target_minutes)
@@ -267,7 +275,24 @@ class Database:
         goal = self.goal(goal_id)
         return goal.target_minutes if goal else 0
 
+    def snapshot_range(self, goal_id: int) -> tuple[date, date] | None:
+        """First and last week that have a stored target for the goal."""
+        row = self.conn.execute(
+            "SELECT MIN(week_start) AS first, MAX(week_start) AS last "
+            "FROM weekly_targets WHERE goal_id = ?",
+            (goal_id,),
+        ).fetchone()
+        if row["first"] is None:
+            return None
+        return date.fromisoformat(row["first"]), date.fromisoformat(row["last"])
+
     # ----------------------------------------------------------- sessions
+
+    def first_session_ts(self, goal_id: int) -> int | None:
+        (ts,) = self.conn.execute(
+            "SELECT MIN(start_ts) FROM sessions WHERE goal_id = ?", (goal_id,)
+        ).fetchone()
+        return ts
 
     def running_session(self) -> Session | None:
         row = self.conn.execute(

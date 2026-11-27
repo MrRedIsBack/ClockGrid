@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QScrollArea,
+    QTabWidget,
     QToolBar,
     QToolButton,
     QVBoxLayout,
@@ -24,6 +25,8 @@ from PySide6.QtWidgets import (
 from clockgrid.db import Database, Goal
 from clockgrid.ui.clock_card import CARD_WIDTH, ClockCard
 from clockgrid.ui.dialogs import DEFAULT_COLORS, GoalDialog, SessionsDialog, SettingsDialog
+from clockgrid.ui.history_tab import HistoryTab
+from clockgrid.ui.stats_tab import StatsTab
 from clockgrid.weeks import format_clock, format_duration, format_week_range
 
 GRID_SPACING = 16
@@ -72,13 +75,27 @@ class MainWindow(QMainWindow):
         self.scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         self.scroll.setWidget(self.grid_host)
 
-        central = QWidget()
-        layout = QVBoxLayout(central)
-        layout.setContentsMargins(24, 16, 24, 16)
+        clocks_page = QWidget()
+        layout = QVBoxLayout(clocks_page)
+        layout.setContentsMargins(0, 12, 0, 0)
         layout.setSpacing(16)
         layout.addLayout(header)
         layout.addWidget(self.empty_label, 1)
         layout.addWidget(self.scroll, 1)
+
+        self.history_tab = HistoryTab(db)
+        self.stats_tab = StatsTab(db)
+        self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(True)
+        self.tabs.addTab(clocks_page, "This week")
+        self.tabs.addTab(self.history_tab, "History")
+        self.tabs.addTab(self.stats_tab, "Stats")
+        self.tabs.currentChanged.connect(self._refresh_current_tab)
+
+        central = QWidget()
+        outer = QVBoxLayout(central)
+        outer.setContentsMargins(24, 8, 24, 16)
+        outer.addWidget(self.tabs)
         self.setCentralWidget(central)
 
         self.reload_goals()
@@ -167,6 +184,14 @@ class MainWindow(QMainWindow):
         self.scroll.setVisible(has_goals)
         self._relayout(force=True)
         self.refresh()
+        self._refresh_current_tab()
+
+    def _refresh_current_tab(self) -> None:
+        """History and Stats are recalculated when shown or after data changes,
+        not every second."""
+        page = self.tabs.currentWidget()
+        if page in (self.history_tab, self.stats_tab):
+            page.refresh()
 
     def refresh(self) -> None:
         now = int(time.time())
@@ -265,9 +290,11 @@ class MainWindow(QMainWindow):
     def open_sessions(self) -> None:
         SessionsDialog(self.db, self).exec()
         self.refresh()
+        self._refresh_current_tab()
 
     def open_settings(self) -> None:
         dlg = SettingsDialog(self, self.db.week_start_day)
         if dlg.exec():
             self.db.week_start_day = dlg.week_start_day()
             self.refresh()
+            self._refresh_current_tab()
