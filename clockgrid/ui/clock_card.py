@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from clockgrid.db import Goal
+from clockgrid.db import Goal, format_amount
 from clockgrid.weeks import format_clock, format_duration
 
 CARD_WIDTH = 240
@@ -116,6 +116,13 @@ def _icon(kind: str, color: QColor, size: int = 16) -> QIcon:
     elif kind == "more":
         for x in (0.25, 0.5, 0.75):
             p.drawEllipse(QPointF(s * x, s * 0.5), s * 0.08, s * 0.08)
+    elif kind in ("plus", "minus"):
+        pen = QPen(color, s * 0.14)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(pen)
+        p.drawLine(QPointF(s * 0.22, s * 0.5), QPointF(s * 0.78, s * 0.5))
+        if kind == "plus":
+            p.drawLine(QPointF(s * 0.5, s * 0.22), QPointF(s * 0.5, s * 0.78))
     p.end()
     return QIcon(pix)
 
@@ -127,7 +134,9 @@ def _text_on(color: QColor) -> str:
 
 
 class ClockCard(QFrame):
-    toggle_requested = Signal(int)
+    toggle_requested = Signal(int)  # start/stop a time goal's timer
+    tally_added = Signal(int)  # +1 on a count goal
+    tally_undone = Signal(int)  # undo the last +1 on a count goal
     edit_requested = Signal(int)
     archive_requested = Signal(int)
     delete_requested = Signal(int)
@@ -138,6 +147,7 @@ class ClockCard(QFrame):
         self.goal_id = goal_id
         self._style_key: tuple | None = None
         self._press_pos: QPoint | None = None
+        self._is_count = False
         self.setCursor(Qt.CursorShape.OpenHandCursor)  # hints that cards can be dragged
         self.setObjectName("ClockCard")
         self.setFixedWidth(CARD_WIDTH)
@@ -183,7 +193,21 @@ class ClockCard(QFrame):
         self.button.setFixedHeight(36)
         self.button.setIconSize(QSize(14, 14))
         self.button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.button.clicked.connect(lambda: self.toggle_requested.emit(self.goal_id))
+        self.button.clicked.connect(self._main_clicked)
+
+        # Count goals get a small undo button beside "+1".
+        self.undo_button = QPushButton()
+        self.undo_button.setObjectName("Undo")
+        self.undo_button.setFixedSize(36, 36)
+        self.undo_button.setIconSize(QSize(14, 14))
+        self.undo_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.undo_button.setToolTip("Undo the last one")
+        self.undo_button.clicked.connect(lambda: self.tally_undone.emit(self.goal_id))
+        self.undo_button.hide()
+        buttons = QHBoxLayout()
+        buttons.setSpacing(8)
+        buttons.addWidget(self.undo_button)
+        buttons.addWidget(self.button, 1)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 12, 14, 14)
@@ -193,7 +217,7 @@ class ClockCard(QFrame):
         layout.addWidget(self.time_label)
         layout.addWidget(self.detail_label)
         layout.addSpacing(4)
-        layout.addWidget(self.button)
+        layout.addLayout(buttons)
 
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(
@@ -251,34 +275,60 @@ class ClockCard(QFrame):
         menu.addAction("Delete…", lambda: self.delete_requested.emit(self.goal_id))
         return menu
 
+    def _main_clicked(self) -> None:
+        if self._is_count:
+            self.tally_added.emit(self.goal_id)
+        else:
+            self.toggle_requested.emit(self.goal_id)
+
     def update_state(
-        self, goal: Goal, worked: int, target_minutes: int, running_since: int | None, now: int
+        self, goal: Goal, worked: int, target: int, running_since: int | None, now: int
     ) -> None:
-        target = target_minutes * 60
+        """`worked` and `target` are in the goal's base unit: seconds for a
+        time goal, items for a count goal."""
+        self._is_count = goal.is_count
         progress = worked / target if target else 0.0
         running = running_since is not None
 
         self.name_label.setText(goal.name)
         self.ring.set_values(progress, goal.color)
-        self.time_label.setText(f"{format_duration(worked)} / {format_duration(target)}")
+        self.undo_button.setVisible(goal.is_count)
+        self.undo_button.setEnabled(goal.is_count and worked > 0)
 
-        if running:
-            self.detail_label.setText(f"● Running  {format_clock(now - running_since)}")
-        elif worked >= target:
-            over = worked - target
-            self.detail_label.setText(f"Goal hit · {format_duration(over)} over" if over >= 60 else "Goal hit")
+        if goal.is_count:
+            self.time_label.setText(f"{worked} / {format_amount(goal, target)}")
+            if worked >= target:
+                extra = worked - target
+                self.detail_label.setText(f"Goal hit · {extra} extra" if extra else "Goal hit")
+            else:
+                self.detail_label.setText(f"{target - worked} to go")
         else:
-            self.detail_label.setText(f"{format_duration(target - worked)} to go")
+            self.time_label.setText(f"{format_duration(worked)} / {format_duration(target)}")
+            if running:
+                self.detail_label.setText(f"● Running  {format_clock(now - running_since)}")
+            elif worked >= target:
+                over = worked - target
+                self.detail_label.setText(f"Goal hit · {format_duration(over)} over" if over >= 60 else "Goal hit")
+            else:
+                self.detail_label.setText(f"{format_duration(target - worked)} to go")
 
-        self._apply_style(goal.color, running)
+        self._apply_style(goal.color, running, goal.is_count)
 
-    def _apply_style(self, color: str, running: bool) -> None:
-        key = (color, running)
+    def _apply_style(self, color: str, running: bool, is_count: bool) -> None:
+        key = (color, running, is_count)
         if key == self._style_key:
             return
         self._style_key = key
         c = QColor(color)
         r, g, b = c.red(), c.green(), c.blue()
+        tinted = (
+            f"background: rgba({r}, {g}, {b}, 0.14); color: palette(text);"
+            f" border: 1px solid rgba({r}, {g}, {b}, 0.55); border-radius: 18px; font-weight: bold;"
+        )
+        tinted_states = (
+            f":hover {{ background: rgba({r}, {g}, {b}, 0.26); }}"
+            f"QPushButton#Toggle:pressed {{ background: rgba({r}, {g}, {b}, 0.36); }}"
+        )
         if running:
             text = _text_on(c)
             self.button.setText(" Stop")
@@ -289,18 +339,21 @@ class ClockCard(QFrame):
                 f"QPushButton#Toggle:hover {{ background: {c.darker(112).name()}; }}"
             )
         else:
-            self.button.setText(" Start")
-            self.button.setIcon(_icon("play", c))
-            toggle = (
-                f"QPushButton#Toggle {{ background: rgba({r}, {g}, {b}, 0.14); color: palette(text);"
-                f" border: 1px solid rgba({r}, {g}, {b}, 0.55); border-radius: 18px; font-weight: bold; }}"
-                f"QPushButton#Toggle:hover {{ background: rgba({r}, {g}, {b}, 0.26); }}"
-                f"QPushButton#Toggle:pressed {{ background: rgba({r}, {g}, {b}, 0.36); }}"
-            )
+            self.button.setText(" Add 1" if is_count else " Start")
+            self.button.setIcon(_icon("plus" if is_count else "play", c))
+            toggle = f"QPushButton#Toggle {{ {tinted} }}QPushButton#Toggle{tinted_states}"
+        self.undo_button.setIcon(_icon("minus", QColor(self.palette().color(QPalette.ColorRole.WindowText))))
+        undo = (
+            "QPushButton#Undo { background: transparent; border: 1px solid rgba(127, 127, 127, 0.35);"
+            " border-radius: 18px; }"
+            "QPushButton#Undo:hover { background: rgba(127, 127, 127, 0.2); }"
+            "QPushButton#Undo:disabled { border-color: rgba(127, 127, 127, 0.15); }"
+        )
         border = f"2px solid {color}" if running else "1px solid rgba(127, 127, 127, 0.25)"
         self.setStyleSheet(
             f"#ClockCard {{ background: palette(base); border: {border}; border-radius: 12px; }}"
             + toggle
+            + undo
             + "QToolButton { border: none; border-radius: 6px; background: transparent; }"
             "QToolButton:hover { background: rgba(127, 127, 127, 0.22); }"
             "QToolButton::menu-indicator { image: none; width: 0; }"

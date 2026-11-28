@@ -11,7 +11,7 @@ import html
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
-from clockgrid.db import Database, Goal
+from clockgrid.db import Database, Goal, target_in_base_units
 from clockgrid.weeks import WEEKDAY_NAMES, format_duration, week_start_for
 
 EVEN_LAST_TWO_DAYS = 2 / 7  # share of time the last two days would get if spread evenly
@@ -19,14 +19,13 @@ EVEN_LAST_TWO_DAYS = 2 / 7  # share of time the last two days would get if sprea
 
 @dataclass(frozen=True)
 class WeekResult:
-    week_start: date
-    worked: int  # seconds
-    target_minutes: int
-    complete: bool  # False for the week still in progress
+    """One goal's week. `worked` and `target` are in the goal's base unit:
+    seconds for a time goal, items for a count goal."""
 
-    @property
-    def target(self) -> int:
-        return self.target_minutes * 60
+    week_start: date
+    worked: int
+    target: int
+    complete: bool  # False for the week still in progress
 
     @property
     def completion(self) -> float:
@@ -66,7 +65,7 @@ def tracked_weeks(db: Database, goal: Goal, current_week: date) -> list[date]:
     candidates = [date.fromtimestamp(goal.created_at)] if goal.created_at else []
     if snapshots:
         candidates.append(snapshots[0])
-    first_ts = db.first_session_ts(goal.id)
+    first_ts = db.first_activity_ts(goal.id)
     if first_ts is not None:
         candidates.append(date.fromtimestamp(first_ts))
     if not candidates:
@@ -100,7 +99,7 @@ def weekly_results(
                 WeekResult(
                     week_start=week,
                     worked=progress_cache[week].get(goal.id, 0),
-                    target_minutes=db.target_minutes_for_week(goal.id, week),
+                    target=target_in_base_units(goal, db.target_minutes_for_week(goal.id, week)),
                     complete=week < current_week,
                 )
             )
@@ -114,20 +113,42 @@ def since(results: list[WeekResult], first_week: date | None) -> list[WeekResult
     return [r for r in results if r.week_start >= first_week]
 
 
-def combine(results_by_goal: dict[int, list[WeekResult]]) -> list[WeekResult]:
-    """Sum all goals into one result per week (worked vs total target)."""
+def _by_week(results_by_goal: dict[int, list[WeekResult]]) -> list[tuple[date, list[WeekResult]]]:
     by_week: dict[date, list[WeekResult]] = {}
     for results in results_by_goal.values():
         for r in results:
             by_week.setdefault(r.week_start, []).append(r)
+    return sorted(by_week.items())
+
+
+def combine(results_by_goal: dict[int, list[WeekResult]]) -> list[WeekResult]:
+    """Sum goals into one result per week (worked vs total target).
+
+    Only meaningful for goals that share a unit, so pass time goals only.
+    """
     return [
         WeekResult(
             week_start=week,
             worked=sum(r.worked for r in rs),
-            target_minutes=sum(r.target_minutes for r in rs),
+            target=sum(r.target for r in rs),
             complete=all(r.complete for r in rs),
         )
-        for week, rs in sorted(by_week.items())
+        for week, rs in _by_week(results_by_goal)
+    ]
+
+
+@dataclass(frozen=True)
+class WeekCompletion:
+    week_start: date
+    completion: float  # average across goals, so time and count goals mix fairly
+    complete: bool
+
+
+def weekly_completion(results_by_goal: dict[int, list[WeekResult]]) -> list[WeekCompletion]:
+    """Average completion across all goals for each week, oldest first."""
+    return [
+        WeekCompletion(week, sum(r.completion for r in rs) / len(rs), all(r.complete for r in rs))
+        for week, rs in _by_week(results_by_goal)
     ]
 
 
@@ -279,11 +300,14 @@ def _b(text: str) -> str:
 
 def insights(
     summaries: dict[int, tuple[Goal, Summary]],
-    combined: list[WeekResult],
+    trend: list[WeekCompletion],
     pat: Patterns,
     week_start_day: int,
 ) -> list[str]:
-    """Plain-language observations, as short HTML snippets."""
+    """Plain-language observations, as short HTML snippets.
+
+    `trend` is from weekly_completion(); `pat` covers time goals only.
+    """
     out: list[str] = []
 
     rated = [(g, s) for g, s in summaries.values() if s.hit_rate is not None]
@@ -306,7 +330,7 @@ def insights(
                 f"({_pct(s.hit_rate)}), averaging {_pct(s.avg_completion)} of the target."
             )
 
-    done = [r for r in combined if r.complete]
+    done = [r for r in trend if r.complete]
     if len(done) >= 4:
         n = min(4, len(done) // 2)
         recent = sum(r.completion for r in done[-n:]) / n

@@ -23,6 +23,8 @@ leaderboard that shows when one goal is eating the time meant for another.
 
 ### This week
 - **A clock per goal**, filling towards its weekly target. Go past 100% and a second, darker lap shows the overshoot.
+- **Time or count goals**: track hours ("6 hours of C++") or a number of things ("6 LeetCode problems").
+  Count goals get a **+1** button (and a − to undo) instead of a timer.
 - **One timer at a time**: starting a goal stops whichever one was running. Timers keep running while the app is closed, since only the start time is stored.
 - **Drag to reorder**: grab a card and drop it where you want it; the order is saved.
 - **Fix-ups**: add, edit or delete sessions by hand for when you forget to press Start. Accidental clicks under a minute are discarded.

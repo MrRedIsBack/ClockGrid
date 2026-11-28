@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from clockgrid import stats
-from clockgrid.db import Database, Goal
+from clockgrid.db import Database, Goal, format_amount
 from clockgrid.ui.charts import Heatmap, WeeklyChart
 from clockgrid.weeks import format_duration, week_bounds
 
@@ -195,20 +195,23 @@ class StatsTab(QWidget):
         results = {gid: rs for gid, rs in results.items() if rs}
         goals = [g for g in goals if g.id in results]
         summaries = {g.id: (g, stats.summarize(results[g.id])) for g in goals}
-        combined = stats.combine(results)
+        # Hours and counts can't be added together, so totals use timed goals only.
+        timed = {g.id: results[g.id] for g in goals if not g.is_count}
+        trend = stats.weekly_completion(results)
 
         start_ts = week_bounds(first_week)[0] if first_week else 0
         end_ts = week_bounds(current)[1]
-        pattern = stats.patterns(self.db, start_ts, end_ts, now, {g.id for g in goals})
+        pattern = stats.patterns(self.db, start_ts, end_ts, now, set(timed))
 
-        color = goals[0].color if goal_id is not None and goals else ALL_GOALS_COLOR
-        if goal_id is not None and goals:
-            self._fill_goal_tiles(summaries[goal_id][1], results[goal_id], pattern)
+        selected = goals[0] if goal_id is not None and goals else None
+        color = selected.color if selected else ALL_GOALS_COLOR
+        if selected:
+            self._fill_goal_tiles(selected, summaries[selected.id][1], results[selected.id], pattern)
         else:
-            self._fill_all_tiles(results, combined, pattern)
+            self._fill_all_tiles(results, trend, timed, pattern)
 
-        lines = stats.insights(summaries, combined, pattern, self.db.week_start_day)
-        if not any(r.complete for r in combined):
+        lines = stats.insights(summaries, trend, pattern, self.db.week_start_day)
+        if not any(r.complete for r in trend):
             lines.insert(0, "Hit rates and averages appear once your first week is finished.")
         self.insights_label.setText(
             "<ul style='margin-left:-24px'>" + "".join(f"<li style='margin-bottom:4px'>{l}</li>" for l in lines) + "</ul>"
@@ -216,12 +219,20 @@ class StatsTab(QWidget):
             else "Track some time to see insights here."
         )
 
-        self.chart_card.title.setText("Week by week" + (" (all goals combined)" if goal_id is None else ""))
-        self.chart.set_data(combined, color)
+        chart_results = results[selected.id] if selected else stats.combine(timed)
+        self.chart_card.setVisible(bool(chart_results))
+        self.chart_card.title.setText("Week by week" + ("" if selected else " (timed goals combined)"))
+        self.chart.set_data(chart_results, color, selected if selected and selected.is_count else None)
 
+        self.heatmap_card.setVisible(bool(timed))
         self.heatmap.set_data(pattern.grid, self.db.week_start_day, color)
 
-    def _fill_goal_tiles(self, s: stats.Summary, results: list[stats.WeekResult], p: stats.Patterns) -> None:
+    def _fill_goal_tiles(
+        self, goal: Goal, s: stats.Summary, results: list[stats.WeekResult], p: stats.Patterns
+    ) -> None:
+        def amount(value: int) -> str:
+            return str(value) if goal.is_count else format_duration(value)
+
         this_week = next((r for r in results if not r.complete), None)
         t = self.tiles
         t[0].set("Hit rate", _pct(s.hit_rate), f"{s.weeks_hit} of {_weeks(s.weeks_completed)} hit")
@@ -231,38 +242,46 @@ class StatsTab(QWidget):
             t[3].set(
                 "This week",
                 _pct(this_week.completion),
-                f"{format_duration(this_week.worked)} of {format_duration(this_week.target)}",
+                f"{amount(this_week.worked)} of {format_amount(goal, this_week.target)}",
             )
         else:
             t[3].set("This week", "–", "not tracked this week")
-        t[4].set("Total time", format_duration(s.total_worked), "in this range")
-        t[5].set(
-            "Average session",
-            format_duration(p.avg_session) if p.session_count else "–",
-            f"{p.session_count} sessions · longest {format_duration(p.longest_session)}",
-        )
+        if goal.is_count:
+            done = [r for r in results if r.complete]
+            t[4].set("Total done", format_amount(goal, s.total_worked), "in this range")
+            t[5].set(
+                "Average per week",
+                f"{sum(r.worked for r in done) / len(done):.1f}" if done else "–",
+                f"{goal.unit or 'items'} in finished weeks",
+            )
+        else:
+            t[4].set("Total time", format_duration(s.total_worked), "in this range")
+            t[5].set(
+                "Average session",
+                format_duration(p.avg_session) if p.session_count else "–",
+                f"{p.session_count} sessions · longest {format_duration(p.longest_session)}",
+            )
 
     def _fill_all_tiles(
         self,
         results: dict[int, list[stats.WeekResult]],
-        combined: list[stats.WeekResult],
+        trend: list[stats.WeekCompletion],
+        timed: dict[int, list[stats.WeekResult]],
         p: stats.Patterns,
     ) -> None:
         flat = [r for rs in results.values() for r in rs]
         overall = stats.summarize(flat)  # hit rate and average across all goal-weeks
-        this_week = next((r for r in combined if not r.complete), None)
+        this_week = next((w for w in trend if not w.complete), None)
+        total_time = sum(r.worked for rs in timed.values() for r in rs)
         t = self.tiles
         t[0].set("Hit rate", _pct(overall.hit_rate), f"{overall.weeks_hit} of {overall.weeks_completed} goal-weeks hit")
         t[1].set("Average completion", _pct(overall.avg_completion), "of each goal's target")
-        if this_week:
-            t[2].set(
-                "This week",
-                _pct(this_week.completion),
-                f"{format_duration(this_week.worked)} of {format_duration(this_week.target)}",
-            )
-        else:
-            t[2].set("This week", "–", "no goals this week")
-        t[3].set("Total time", format_duration(overall.total_worked), "in this range")
+        t[2].set(
+            "This week",
+            _pct(this_week.completion) if this_week else "–",
+            "average across goals" if this_week else "no goals this week",
+        )
+        t[3].set("Total time", format_duration(total_time), "on timed goals in this range")
         t[4].set("Sessions", str(p.session_count), "in this range")
         t[5].set(
             "Average session",

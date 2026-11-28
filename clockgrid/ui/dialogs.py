@@ -23,13 +23,15 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QSpinBox,
+    QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
-from clockgrid.db import Database, Goal, Session
+from clockgrid.db import COUNT, TIME, Database, Goal, Session
 from clockgrid.ui.clock_card import ProgressRing
 from clockgrid.weeks import WEEKDAY_NAMES, format_duration, format_week_range, week_bounds
 
@@ -44,14 +46,18 @@ def _buttons(dialog: QDialog, ok_handler) -> QDialogButtonBox:
     return box
 
 
-TARGET_PRESETS = [1, 3, 5, 10, 20]
+HOUR_PRESETS = [1, 3, 5, 10, 20]
+COUNT_PRESETS = [1, 3, 5, 7, 10]
 
 GOAL_DIALOG_STYLE = """
-QPushButton#Chip {
+QPushButton#Chip, QPushButton#Kind {
     border: 1px solid rgba(127, 127, 127, 0.35); border-radius: 12px;
     padding: 3px 12px; background: transparent;
 }
-QPushButton#Chip:hover { background: rgba(127, 127, 127, 0.18); }
+QPushButton#Kind { padding: 6px 16px; border-radius: 14px; }
+QPushButton#Chip:hover, QPushButton#Kind:hover { background: rgba(127, 127, 127, 0.18); }
+QPushButton#Kind:checked { background: rgba(127, 127, 127, 0.32); border-color: palette(text); font-weight: bold; }
+QPushButton#Kind:disabled { color: palette(text); }
 """
 
 
@@ -63,15 +69,26 @@ def _section(text: str) -> QLabel:
     return label
 
 
+def _chip(text: str, object_name: str = "Chip") -> QPushButton:
+    chip = QPushButton(text)
+    chip.setObjectName(object_name)
+    chip.setCursor(Qt.CursorShape.PointingHandCursor)
+    return chip
+
+
 class GoalDialog(QDialog):
-    """Create or edit a goal, with a live preview of its clock."""
+    """Create or edit a goal, with a live preview of its clock.
+
+    A goal is either timed ("5 hours a week") or counted ("6 problems a week").
+    The kind is chosen when creating a goal and can't be changed afterwards.
+    """
 
     def __init__(
         self, parent: QWidget | None = None, goal: Goal | None = None, default_color: str = DEFAULT_COLORS[0]
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Edit goal" if goal else "New goal")
-        self.setMinimumWidth(560)
+        self.setMinimumWidth(580)
         self.setStyleSheet(GOAL_DIALOG_STYLE)
         self.color = QColor(goal.color if goal else default_color)
 
@@ -80,7 +97,7 @@ class GoalDialog(QDialog):
         title_font.setPointSizeF(title_font.pointSizeF() * 1.5)
         title_font.setBold(True)
         title.setFont(title_font)
-        subtitle = QLabel("How much time do you want to spend on this each week?")
+        subtitle = QLabel("What do you want to get done each week?")
         subtitle.setEnabled(False)
 
         # Live preview of the clock
@@ -98,13 +115,32 @@ class GoalDialog(QDialog):
         preview.addWidget(self.preview_name)
         preview.addStretch(1)
 
+        # Kind: time or count
+        self.time_kind = _chip("Time", "Kind")
+        self.count_kind = _chip("Count", "Kind")
+        self.time_kind.setToolTip("Track hours, e.g. 5 hours of studying a week")
+        self.count_kind.setToolTip("Track a number of things, e.g. 6 LeetCode problems a week")
+        self.kind_group = QButtonGroup(self)
+        for button in (self.time_kind, self.count_kind):
+            button.setCheckable(True)
+            self.kind_group.addButton(button)
+        is_count = bool(goal and goal.is_count)
+        (self.count_kind if is_count else self.time_kind).setChecked(True)
+        if goal:  # a goal's kind is fixed once it has history
+            self.time_kind.setEnabled(False)
+            self.count_kind.setEnabled(False)
+        kind_row = QHBoxLayout()
+        kind_row.setSpacing(6)
+        kind_row.addWidget(self.time_kind)
+        kind_row.addWidget(self.count_kind)
+        kind_row.addStretch(1)
+
         # Name
         self.name_edit = QLineEdit(goal.name if goal else "")
-        self.name_edit.setPlaceholderText("e.g. C++ (learncpp.com)")
         self.name_edit.setMaxLength(60)
         self.name_edit.setMinimumHeight(32)
 
-        # Weekly target, with one-click presets
+        # Weekly target: hours for time goals...
         self.hours_spin = QDoubleSpinBox()
         self.hours_spin.setRange(0.25, 168)
         self.hours_spin.setSingleStep(0.5)
@@ -112,22 +148,60 @@ class GoalDialog(QDialog):
         self.hours_spin.setSuffix(" h")
         self.hours_spin.setMinimumHeight(32)
         self.hours_spin.setMinimumWidth(110)
-        self.hours_spin.setValue(goal.target_minutes / 60 if goal else 5)
-        self.per_day = QLabel()
-        self.per_day.setEnabled(False)
-        target_row = QHBoxLayout()
-        target_row.addWidget(self.hours_spin)
-        target_row.addWidget(self.per_day)
-        target_row.addStretch(1)
-        presets = QHBoxLayout()
-        presets.setSpacing(6)
-        for hours in TARGET_PRESETS:
-            chip = QPushButton(f"{hours}h")
-            chip.setObjectName("Chip")
-            chip.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.hours_spin.setValue(goal.target_minutes / 60 if goal and not goal.is_count else 5)
+        self.hours_per_day = QLabel()
+        self.hours_per_day.setEnabled(False)
+        hours_row = QHBoxLayout()
+        hours_row.addWidget(self.hours_spin)
+        hours_row.addWidget(self.hours_per_day)
+        hours_row.addStretch(1)
+        hour_presets = QHBoxLayout()
+        hour_presets.setSpacing(6)
+        for hours in HOUR_PRESETS:
+            chip = _chip(f"{hours}h")
             chip.clicked.connect(lambda _=False, h=hours: self.hours_spin.setValue(h))
-            presets.addWidget(chip)
-        presets.addStretch(1)
+            hour_presets.addWidget(chip)
+        hour_presets.addStretch(1)
+        time_page = QWidget()
+        time_layout = QVBoxLayout(time_page)
+        time_layout.setContentsMargins(0, 0, 0, 0)
+        time_layout.setSpacing(6)
+        time_layout.addLayout(hours_row)
+        time_layout.addLayout(hour_presets)
+
+        # ...or a number of items for count goals
+        self.count_spin = QSpinBox()
+        self.count_spin.setRange(1, 999)
+        self.count_spin.setMinimumHeight(32)
+        self.count_spin.setMinimumWidth(80)
+        self.count_spin.setValue(goal.target_minutes if goal and goal.is_count else 5)
+        self.unit_edit = QLineEdit(goal.unit if goal and goal.is_count else "")
+        self.unit_edit.setPlaceholderText("problems")
+        self.unit_edit.setMaxLength(24)
+        self.unit_edit.setMinimumHeight(32)
+        self.count_per_day = QLabel()
+        self.count_per_day.setEnabled(False)
+        count_row = QHBoxLayout()
+        count_row.addWidget(self.count_spin)
+        count_row.addWidget(self.unit_edit, 1)
+        count_row.addWidget(self.count_per_day)
+        count_presets = QHBoxLayout()
+        count_presets.setSpacing(6)
+        for n in COUNT_PRESETS:
+            chip = _chip(str(n))
+            chip.clicked.connect(lambda _=False, v=n: self.count_spin.setValue(v))
+            count_presets.addWidget(chip)
+        count_presets.addStretch(1)
+        count_page = QWidget()
+        count_layout = QVBoxLayout(count_page)
+        count_layout.setContentsMargins(0, 0, 0, 0)
+        count_layout.setSpacing(6)
+        count_layout.addLayout(count_row)
+        count_layout.addLayout(count_presets)
+
+        self.target_pages = QStackedWidget()
+        self.target_pages.addWidget(time_page)
+        self.target_pages.addWidget(count_page)
 
         # Colour swatches, plus a custom colour picker
         self.swatches = QButtonGroup(self)
@@ -150,12 +224,14 @@ class GoalDialog(QDialog):
 
         fields = QVBoxLayout()
         fields.setSpacing(6)
+        fields.addWidget(_section("Type"))
+        fields.addLayout(kind_row)
+        fields.addSpacing(10)
         fields.addWidget(_section("Name"))
         fields.addWidget(self.name_edit)
         fields.addSpacing(10)
         fields.addWidget(_section("Weekly target"))
-        fields.addLayout(target_row)
-        fields.addLayout(presets)
+        fields.addWidget(self.target_pages)
         fields.addSpacing(10)
         fields.addWidget(_section("Colour"))
         fields.addLayout(swatch_row)
@@ -190,10 +266,17 @@ class GoalDialog(QDialog):
         layout.addSpacing(10)
         layout.addWidget(buttons)
 
+        self.kind_group.buttonClicked.connect(self._update)
         self.name_edit.textChanged.connect(self._update)
         self.hours_spin.valueChanged.connect(self._update)
+        self.count_spin.valueChanged.connect(self._update)
+        self.unit_edit.textChanged.connect(self._update)
         self.name_edit.setFocus()
         self._update()
+
+    @property
+    def is_count(self) -> bool:
+        return self.count_kind.isChecked()
 
     @staticmethod
     def _swatch(color: str | None) -> QPushButton:
@@ -234,13 +317,24 @@ class GoalDialog(QDialog):
             self._set_color(color)
         self._check_current_swatch()
 
-    def _update(self) -> None:
+    def _update(self, *_args) -> None:
         name = self.name_edit.text().strip()
-        hours = self.hours_spin.value()
-        self.preview_name.setText(name or "Your goal")
-        self.preview.center_text = format_duration(round(hours * 3600))
+        self.target_pages.setCurrentIndex(1 if self.is_count else 0)
+        if self.is_count:
+            self.name_edit.setPlaceholderText("e.g. LeetCode")
+            n = self.count_spin.value()
+            unit = self.unit_edit.text().strip()
+            self.preview.center_text = str(n)
+            self.preview_name.setText(f"{name or 'Your goal'}\n{n} {unit or 'items'} a week")
+            per_day = n / 7
+            self.count_per_day.setText(f"≈ {per_day:.1f} a day" if per_day < 10 else f"≈ {round(per_day)} a day")
+        else:
+            self.name_edit.setPlaceholderText("e.g. C++ (learncpp.com)")
+            hours = self.hours_spin.value()
+            self.preview.center_text = format_duration(round(hours * 3600))
+            self.preview_name.setText(name or "Your goal")
+            self.hours_per_day.setText(f"≈ {format_duration(round(hours * 3600 / 7))} a day")
         self.preview.set_values(0.65, self.color.name())
-        self.per_day.setText(f"≈ {format_duration(round(hours * 3600 / 7))} a day")
         self.ok_button.setEnabled(bool(name))
         self.ok_button.setStyleSheet(
             f"QPushButton {{ background: {self.color.name()}; color: white; border: none;"
@@ -248,8 +342,14 @@ class GoalDialog(QDialog):
             "QPushButton:disabled { background: rgba(127, 127, 127, 0.3); color: rgba(255, 255, 255, 0.6); }"
         )
 
-    def values(self) -> tuple[str, str, int]:
-        return self.name_edit.text().strip(), self.color.name(), round(self.hours_spin.value() * 60)
+    def values(self) -> tuple[str, str, int, str, str]:
+        """(name, colour, target, kind, unit). The target is in minutes for a
+        time goal and in items for a count goal."""
+        name = self.name_edit.text().strip()
+        if self.is_count:
+            unit = self.unit_edit.text().strip() or "items"
+            return name, self.color.name(), self.count_spin.value(), COUNT, unit
+        return name, self.color.name(), round(self.hours_spin.value() * 60), TIME, ""
 
 
 class SessionDialog(QDialog):
@@ -424,7 +524,7 @@ class SessionsDialog(QDialog):
         return self.db.session(items[0].data(Qt.ItemDataRole.UserRole))
 
     def _goals_for(self, session: Session | None) -> list[Goal]:
-        goals = self.db.goals()
+        goals = [g for g in self.db.goals() if not g.is_count]  # sessions are for timed goals
         if session and all(g.id != session.goal_id for g in goals):
             archived = self.db.goal(session.goal_id)
             if archived:

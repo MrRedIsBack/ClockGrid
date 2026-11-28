@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from clockgrid import stats
-from clockgrid.db import Database
+from clockgrid.db import Database, format_amount
 from clockgrid.weeks import format_duration, format_week_range
 
 HIT_TINT = QColor(39, 174, 96, 55)
@@ -97,7 +97,7 @@ class HistoryTab(QWidget):
                 mark = "…" if not r.complete else ("✓" if r.hit else "✗")
                 item = self.table.item(row_of[r.week_start], col)
                 item.setText(
-                    f"{mark}  {format_duration(r.worked)} / {format_duration(r.target)}"
+                    f"{mark}  {r.worked if g.is_count else format_duration(r.worked)} / {format_amount(g, r.target)}"
                     f"   {round(r.completion * 100)}%"
                 )
                 item.setToolTip(

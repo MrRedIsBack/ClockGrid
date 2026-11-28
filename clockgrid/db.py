@@ -1,7 +1,16 @@
-"""SQLite storage for goals, sessions and weekly target snapshots.
+"""SQLite storage for goals, sessions, tallies and weekly target snapshots.
 
-Sessions are the raw record; weekly progress and (later) stats are derived
-from them. Each week also stores a snapshot of every goal's target, so that
+There are two kinds of goal:
+
+- time goals ("5 hours of AI a week"), tracked with timed sessions;
+- count goals ("6 LeetCode problems a week"), tracked with tallies.
+
+For both, the `target_minutes` column holds the weekly target in the goal's
+own unit: minutes for a time goal, items for a count goal. Weekly progress
+is reported in base units: seconds for time goals, items for count goals.
+
+Sessions and tallies are the raw record; everything else is derived from
+them. Each week also stores a snapshot of every goal's target, so that
 changing a target later does not rewrite how past weeks are judged.
 """
 
@@ -14,18 +23,28 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
-from clockgrid.weeks import overlap_seconds, week_bounds, week_start_for
+from clockgrid.weeks import format_duration, overlap_seconds, week_bounds, week_start_for
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS goals (
     id             INTEGER PRIMARY KEY,
     name           TEXT    NOT NULL,
     color          TEXT    NOT NULL,
-    target_minutes INTEGER NOT NULL CHECK (target_minutes > 0),
+    target_minutes INTEGER NOT NULL CHECK (target_minutes > 0),  -- minutes, or items for count goals
     archived       INTEGER NOT NULL DEFAULT 0,
     sort_order     INTEGER NOT NULL DEFAULT 0,
-    created_at     INTEGER NOT NULL
+    created_at     INTEGER NOT NULL,
+    kind           TEXT    NOT NULL DEFAULT 'time' CHECK (kind IN ('time', 'count')),
+    unit           TEXT    NOT NULL DEFAULT ''   -- e.g. "problems", for count goals
 );
+
+CREATE TABLE IF NOT EXISTS tallies (
+    id      INTEGER PRIMARY KEY,
+    goal_id INTEGER NOT NULL REFERENCES goals(id) ON DELETE CASCADE,
+    ts      INTEGER NOT NULL,
+    amount  INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_tallies_ts ON tallies(ts);
 
 CREATE TABLE IF NOT EXISTS sessions (
     id       INTEGER PRIMARY KEY,
@@ -51,6 +70,8 @@ CREATE TABLE IF NOT EXISTS settings (
 
 
 MIN_SESSION_SECONDS = 60
+TIME = "time"
+COUNT = "count"
 
 
 def default_db_path() -> Path:
@@ -75,6 +96,24 @@ class Goal:
     archived: bool
     sort_order: int
     created_at: int = 0
+    kind: str = TIME
+    unit: str = ""
+
+    @property
+    def is_count(self) -> bool:
+        return self.kind == COUNT
+
+
+def target_in_base_units(goal: Goal, target: int) -> int:
+    """A stored target (minutes, or items) in progress units (seconds, or items)."""
+    return target if goal.is_count else target * 60
+
+
+def format_amount(goal: Goal, value: int) -> str:
+    """'3h 20m' for a time goal, '4 problems' for a count goal."""
+    if goal.is_count:
+        return f"{value} {goal.unit}".strip()
+    return format_duration(value)
 
 
 @dataclass(frozen=True)
@@ -102,6 +141,8 @@ def _goal(row: sqlite3.Row) -> Goal:
         archived=bool(row["archived"]),
         sort_order=row["sort_order"],
         created_at=row["created_at"],
+        kind=row["kind"],
+        unit=row["unit"],
     )
 
 
@@ -116,7 +157,16 @@ class Database:
         self.conn = sqlite3.connect(str(path))
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
+        self._migrate()
         self.conn.executescript(SCHEMA)
+
+    def _migrate(self) -> None:
+        """Bring databases created by older versions up to date."""
+        columns = {r["name"] for r in self.conn.execute("PRAGMA table_info(goals)")}
+        if columns and "kind" not in columns:  # added with count goals
+            with self.conn:
+                self.conn.execute("ALTER TABLE goals ADD COLUMN kind TEXT NOT NULL DEFAULT 'time'")
+                self.conn.execute("ALTER TABLE goals ADD COLUMN unit TEXT NOT NULL DEFAULT ''")
 
     def close(self) -> None:
         self.conn.close()
@@ -168,23 +218,36 @@ class Database:
         color: str,
         target_minutes: int,
         *,
+        kind: str = TIME,
+        unit: str = "",
         week_start: date | None = None,
         created_at: int | None = None,
     ) -> Goal:
+        """Add a goal. `target_minutes` is in minutes, or in items for a count goal."""
         name = name.strip()
         if not name:
             raise ValueError("Goal name cannot be empty")
         if target_minutes <= 0:
             raise ValueError("Target must be greater than zero")
+        if kind not in (TIME, COUNT):
+            raise ValueError(f"Unknown goal kind: {kind}")
         week_start = week_start or self.current_week_start()
         with self.conn:
             (next_order,) = self.conn.execute(
                 "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM goals"
             ).fetchone()
             cur = self.conn.execute(
-                "INSERT INTO goals (name, color, target_minutes, sort_order, created_at) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (name, color, target_minutes, next_order, created_at if created_at is not None else _now()),
+                "INSERT INTO goals (name, color, target_minutes, sort_order, created_at, kind, unit) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    name,
+                    color,
+                    target_minutes,
+                    next_order,
+                    created_at if created_at is not None else _now(),
+                    kind,
+                    unit.strip() if kind == COUNT else "",
+                ),
             )
             goal_id = cur.lastrowid
             self._set_week_target(goal_id, week_start, target_minutes)
@@ -197,9 +260,11 @@ class Database:
         name: str,
         color: str,
         target_minutes: int,
+        unit: str | None = None,
         week_start: date | None = None,
     ) -> None:
-        """Update a goal. A new target applies from the current week onwards."""
+        """Update a goal. A new target applies from the current week onwards.
+        A goal's kind (time or count) can't be changed once created."""
         name = name.strip()
         if not name:
             raise ValueError("Goal name cannot be empty")
@@ -211,6 +276,10 @@ class Database:
                 "UPDATE goals SET name = ?, color = ?, target_minutes = ? WHERE id = ?",
                 (name, color, target_minutes, goal_id),
             )
+            if unit is not None:
+                self.conn.execute(
+                    "UPDATE goals SET unit = ? WHERE id = ? AND kind = ?", (unit.strip(), goal_id, COUNT)
+                )
             self._set_week_target(goal_id, week_start, target_minutes)
 
     def set_archived(self, goal_id: int, archived: bool, now: int | None = None) -> None:
@@ -296,9 +365,14 @@ class Database:
 
     # ----------------------------------------------------------- sessions
 
-    def first_session_ts(self, goal_id: int) -> int | None:
+    def first_activity_ts(self, goal_id: int) -> int | None:
+        """Timestamp of the goal's earliest session or tally."""
         (ts,) = self.conn.execute(
-            "SELECT MIN(start_ts) FROM sessions WHERE goal_id = ?", (goal_id,)
+            "SELECT MIN(ts) FROM ("
+            "  SELECT MIN(start_ts) AS ts FROM sessions WHERE goal_id = ?"
+            "  UNION ALL SELECT MIN(ts) FROM tallies WHERE goal_id = ?"
+            ")",
+            (goal_id, goal_id),
         ).fetchone()
         return ts
 
@@ -382,7 +456,8 @@ class Database:
         return [_session(r) for r in rows]
 
     def week_progress(self, week_start: date, now: int | None = None) -> dict[int, int]:
-        """Seconds worked per goal id during the week.
+        """Progress per goal id during the week: seconds for time goals,
+        items for count goals.
 
         Sessions that cross the week boundary only count the part inside the
         week, and a running session counts up to `now`.
@@ -393,4 +468,42 @@ class Database:
         for s in self.sessions_between(ws, we, now):
             end = s.end_ts if s.end_ts is not None else now
             totals[s.goal_id] = totals.get(s.goal_id, 0) + overlap_seconds(s.start_ts, end, ws, we)
+        for row in self.conn.execute(
+            "SELECT goal_id, SUM(amount) AS total FROM tallies WHERE ts >= ? AND ts < ? GROUP BY goal_id",
+            (ws, we),
+        ):
+            totals[row["goal_id"]] = totals.get(row["goal_id"], 0) + row["total"]
         return totals
+
+    # ------------------------------------------------------------ tallies
+
+    def add_tally(self, goal_id: int, amount: int = 1, now: int | None = None) -> None:
+        """Record finished items for a count goal, e.g. one solved problem."""
+        if amount <= 0:
+            raise ValueError("Amount must be positive")
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO tallies (goal_id, ts, amount) VALUES (?, ?, ?)",
+                (goal_id, now if now is not None else _now(), amount),
+            )
+
+    def undo_tally(self, goal_id: int, week_start: date) -> bool:
+        """Remove the most recent tally for the goal in the given week.
+        Returns False if there was nothing to undo."""
+        ws, we = week_bounds(week_start)
+        with self.conn:
+            row = self.conn.execute(
+                "SELECT id FROM tallies WHERE goal_id = ? AND ts >= ? AND ts < ? "
+                "ORDER BY ts DESC, id DESC LIMIT 1",
+                (goal_id, ws, we),
+            ).fetchone()
+            if row is None:
+                return False
+            self.conn.execute("DELETE FROM tallies WHERE id = ?", (row["id"],))
+        return True
+
+    def tally_count(self, goal_id: int) -> int:
+        (total,) = self.conn.execute(
+            "SELECT COALESCE(SUM(amount), 0) FROM tallies WHERE goal_id = ?", (goal_id,)
+        ).fetchone()
+        return total

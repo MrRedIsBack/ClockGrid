@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from clockgrid.db import Database, Goal
+from clockgrid.db import Database, Goal, target_in_base_units
 from clockgrid.ui.clock_card import CARD_MIME, CARD_WIDTH, ClockCard
 from clockgrid.ui.dialogs import DEFAULT_COLORS, GoalDialog, SessionsDialog, SettingsDialog
 from clockgrid.ui.history_tab import HistoryTab
@@ -302,6 +302,8 @@ class MainWindow(QMainWindow):
                 card.archive_requested.connect(self.archive_goal)
                 card.delete_requested.connect(self.delete_goal)
                 card.drag_finished.connect(self._finish_card_drag)
+                card.tally_added.connect(self.add_tally)
+                card.tally_undone.connect(self.undo_tally)
                 self.cards[g.id] = card
         has_goals = bool(self.goals)
         self.empty_label.setVisible(not has_goals)
@@ -351,19 +353,20 @@ class MainWindow(QMainWindow):
 
         progress = self.db.week_progress(week, now)
         running = self.db.running_session()
-        total_worked = total_target = 0
+        total_worked = total_target = 0  # timed goals only; counts don't add up with hours
         for goal in self.goals:
-            target = self.db.target_minutes_for_week(goal.id, week)
+            target = target_in_base_units(goal, self.db.target_minutes_for_week(goal.id, week))
             worked = progress.get(goal.id, 0)
-            total_worked += worked
-            total_target += target * 60
+            if not goal.is_count:
+                total_worked += worked
+                total_target += target
             since = running.start_ts if running and running.goal_id == goal.id else None
             self.cards[goal.id].update_state(goal, worked, target, since, now)
 
         self.week_label.setText(f"This week · {format_week_range(week)}")
         self.total_label.setText(
             f"Total {format_duration(total_worked)} / {format_duration(total_target)}"
-            if self.goals
+            if total_target
             else ""
         )
 
@@ -383,12 +386,20 @@ class MainWindow(QMainWindow):
             self.db.start_timer(goal_id)
         self.refresh()
 
+    def add_tally(self, goal_id: int) -> None:
+        self.db.add_tally(goal_id)
+        self.refresh()
+
+    def undo_tally(self, goal_id: int) -> None:
+        self.db.undo_tally(goal_id, self.db.current_week_start())
+        self.refresh()
+
     def add_goal(self) -> None:
         count = len(self.db.goals(include_archived=True))
         dlg = GoalDialog(self, default_color=DEFAULT_COLORS[count % len(DEFAULT_COLORS)])
         if dlg.exec():
-            name, color, minutes = dlg.values()
-            self.db.add_goal(name, color, minutes)
+            name, color, target, kind, unit = dlg.values()
+            self.db.add_goal(name, color, target, kind=kind, unit=unit)
             self.reload_goals()
 
     def edit_goal(self, goal_id: int) -> None:
@@ -397,8 +408,10 @@ class MainWindow(QMainWindow):
             return
         dlg = GoalDialog(self, goal=goal)
         if dlg.exec():
-            name, color, minutes = dlg.values()
-            self.db.update_goal(goal_id, name=name, color=color, target_minutes=minutes)
+            name, color, target, _kind, unit = dlg.values()
+            self.db.update_goal(
+                goal_id, name=name, color=color, target_minutes=target, unit=unit if goal.is_count else None
+            )
             self.reload_goals()
 
     def archive_goal(self, goal_id: int) -> None:
@@ -423,11 +436,15 @@ class MainWindow(QMainWindow):
         goal = self.db.goal(goal_id)
         if goal is None:
             return
-        count = self.db.session_count(goal_id)
+        history = (
+            f"{self.db.tally_count(goal_id)} logged {goal.unit or 'items'}"
+            if goal.is_count
+            else f"{self.db.session_count(goal_id)} session(s)"
+        )
         answer = QMessageBox.warning(
             self,
             "Delete goal",
-            f"Permanently delete “{goal.name}” and its {count} session(s)?\n\n"
+            f"Permanently delete “{goal.name}” and its {history}?\n\n"
             "This can't be undone. Use Archive instead to keep the history.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel,

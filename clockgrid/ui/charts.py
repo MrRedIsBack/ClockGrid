@@ -17,6 +17,7 @@ from PySide6.QtCore import QMargins, QPointF, QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QCursor, QFont, QPainter, QPalette, QPen
 from PySide6.QtWidgets import QSizePolicy, QToolTip, QWidget
 
+from clockgrid.db import Goal, format_amount
 from clockgrid.stats import WeekResult
 from clockgrid.weeks import WEEKDAY_NAMES, format_duration
 
@@ -33,7 +34,8 @@ def _is_dark(widget: QWidget) -> bool:
 
 
 class WeeklyChart(QChartView):
-    """Bars for time worked each week, with the target as a dashed line."""
+    """Bars for what was done each week, with the target as a dashed line.
+    Shows hours for time goals, or a plain count for a count goal."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -41,15 +43,19 @@ class WeeklyChart(QChartView):
         self.setMinimumHeight(260)
         self.setStyleSheet("background: transparent;")
         self._results: list[WeekResult] = []
+        self._count_goal: Goal | None = None
 
-    def set_data(self, results: list[WeekResult], color: str) -> None:
+    def set_data(self, results: list[WeekResult], color: str, count_goal: Goal | None = None) -> None:
+        """Pass `count_goal` when charting a count goal; otherwise values are seconds."""
         self._results = results
+        self._count_goal = count_goal
+        scale = 1 if count_goal else 3600
         chart = QChart()
         chart.setBackgroundVisible(False)
         chart.setMargins(QMargins(4, 4, 4, 4))
         chart.setAnimationOptions(QChart.AnimationOption.NoAnimation)
 
-        bars = QBarSet("Worked")
+        bars = QBarSet("Done" if count_goal else "Worked")
         bars.setColor(QColor(color))
         bars.setBorderColor(QColor(color))
         target_line = QLineSeries()
@@ -60,17 +66,17 @@ class WeeklyChart(QChartView):
         labels = []
         top = 1.0
         for i, r in enumerate(results):
-            hours = r.worked / 3600
-            target = r.target / 3600
-            bars.append(hours)
+            value = r.worked / scale
+            target = r.target / scale
+            bars.append(value)
             target_line.append(QPointF(i, target))
-            top = max(top, hours, target)
+            top = max(top, value, target)
             label = f"{r.week_start:%b} {r.week_start.day}"
             labels.append(label + ("*" if not r.complete else ""))
         # A one-week target line would be a single invisible point; widen it across the bar.
         if len(results) == 1:
             target_line.clear()
-            t = results[0].target / 3600
+            t = results[0].target / scale
             target_line.append(QPointF(-0.4, t))
             target_line.append(QPointF(0.4, t))
 
@@ -86,7 +92,8 @@ class WeeklyChart(QChartView):
         axis_y.setRange(0, top * 1.1)
         axis_y.setTickCount(5)
         axis_y.applyNiceNumbers()  # round ticks to e.g. 0, 10, 20, 30
-        axis_y.setLabelFormat("%.0f h" if axis_y.max() >= 4 else "%.1f h")
+        suffix = "" if count_goal else " h"
+        axis_y.setLabelFormat(f"%.0f{suffix}" if axis_y.max() >= 4 else f"%.1f{suffix}")
         for axis in (axis_x, axis_y):
             axis.setLabelsColor(_ink(self, muted=True))
             axis.setLinePen(QPen(Qt.PenStyle.NoPen))
@@ -114,11 +121,14 @@ class WeeklyChart(QChartView):
         r = self._results[index]
         end = r.week_start + timedelta(days=6)
         state = "in progress" if not r.complete else ("✓ hit" if r.hit else "✗ missed")
+        if self._count_goal:
+            amount = f"{r.worked} of {format_amount(self._count_goal, r.target)}"
+        else:
+            amount = f"{format_duration(r.worked)} of {format_duration(r.target)}"
         QToolTip.showText(
             QCursor.pos(),
             f"<b>{r.week_start:%b} {r.week_start.day} – {end:%b} {end.day}</b><br>"
-            f"{format_duration(r.worked)} of {format_duration(r.target)} "
-            f"({round(r.completion * 100)}%)<br>{state}",
+            f"{amount} ({round(r.completion * 100)}%)<br>{state}",
             self,
         )
 

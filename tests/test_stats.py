@@ -75,7 +75,7 @@ def test_past_targets_are_used(db):
     log(db, g, WEEKS[0], 5)
     log(db, g, WEEKS[2], 5)
     results = stats.weekly_results(db, [g], CURRENT, NOW)[g.id]
-    assert [r.target_minutes for r in results] == [300, 300, 600, 600]
+    assert [r.target for r in results] == [300 * 60, 300 * 60, 600 * 60, 600 * 60]
     assert [r.hit for r in results[:3]] == [True, False, False]
 
 
@@ -102,7 +102,7 @@ def test_combine(db):
     log(db, b, WEEKS[0], 2, start_hour=14)
     results = stats.weekly_results(db, [a, b], CURRENT, NOW)
     combined = stats.combine(results)
-    assert combined[0].worked == 3 * HOUR and combined[0].target_minutes == 180
+    assert combined[0].worked == 3 * HOUR and combined[0].target == 180 * 60
     assert [r.complete for r in combined] == [True, True, True, False]
 
 
@@ -178,7 +178,7 @@ def test_insights_mention_best_and_worst_goal(db):
     summaries = {g.id: (g, stats.summarize(results[g.id])) for g in (a, b)}
     ws = week_bounds(W0)[0]
     p = stats.patterns(db, ws, NOW, NOW)
-    text = " ".join(stats.insights(summaries, stats.combine(results), p, 0))
+    text = " ".join(stats.insights(summaries, stats.weekly_completion(results), p, 0))
     assert "<b>Reading</b> most often" in text
     assert "<b>Gym</b> is the hardest" in text
     assert "busiest day" in text
@@ -187,3 +187,57 @@ def test_insights_mention_best_and_worst_goal(db):
 def test_insights_empty_without_data(db):
     p = stats.patterns(db, 0, NOW, NOW)
     assert stats.insights({}, [], p, 0) == []
+
+
+# ---------------------------------------------------------------- count goals
+
+
+def make_count_goal(db, target=6, name="LeetCode"):
+    return db.add_goal(name, "#f2994a", target, kind="count", unit="problems", week_start=W0, created_at=ts(W0, 9))
+
+
+def tally(db, goal, day, n, hour=12):
+    for i in range(n):
+        db.add_tally(goal.id, now=ts(day, hour) + i)
+
+
+def test_count_goal_weekly_results(db):
+    g = make_count_goal(db, target=6)
+    tally(db, g, WEEKS[0], 6)  # hit
+    tally(db, g, WEEKS[1], 3)  # 50%
+    tally(db, g, CURRENT, 2)
+    results = stats.weekly_results(db, [g], CURRENT, NOW)[g.id]
+    assert [(r.worked, r.target) for r in results] == [(6, 6), (3, 6), (0, 6), (2, 6)]
+    assert [r.hit for r in results[:3]] == [True, False, False]
+    s = stats.summarize(results)
+    assert s.avg_completion == pytest.approx((1.0 + 0.5 + 0.0) / 3)
+
+
+def test_leaderboard_mixes_time_and_count_goals(db):
+    timed = make_goal(db, 60, "Reading")
+    counted = make_count_goal(db, 6)
+    for w in WEEKS[:3]:
+        log(db, timed, w, 0.5)  # 50%
+        tally(db, counted, w, 6)  # 100%
+    results = stats.weekly_results(db, [timed, counted], CURRENT, NOW)
+    board = stats.leaderboard([timed, counted], results)
+    assert [e.goal.name for e in board] == ["LeetCode", "Reading"]
+    assert [round(e.completion, 2) for e in board] == [1.0, 0.5]
+
+
+def test_weekly_completion_averages_across_units(db):
+    timed = make_goal(db, 60, "Reading")
+    counted = make_count_goal(db, 4)
+    log(db, timed, WEEKS[0], 1)  # 100%
+    tally(db, counted, WEEKS[0], 1)  # 25%
+    results = stats.weekly_results(db, [timed, counted], CURRENT, NOW)
+    trend = stats.weekly_completion(results)
+    assert trend[0].completion == pytest.approx(0.625)
+    assert trend[0].complete and not trend[-1].complete
+
+
+def test_patterns_ignore_tallies(db):
+    g = make_count_goal(db)
+    tally(db, g, WEEKS[0], 5)
+    ws, we = week_bounds(WEEKS[0])
+    assert stats.patterns(db, ws, we, NOW).total == 0

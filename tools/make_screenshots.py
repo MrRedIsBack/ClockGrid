@@ -29,14 +29,14 @@ from clockgrid.ui.main_window import MainWindow  # noqa: E402
 OUT = ROOT / "docs" / "screenshots"
 WEEKS = 12
 
-# name, colour, weekly target (hours), how much of the target is usually reached,
-# preferred start hours, preferred weekdays (Mon = 0)
+# name, colour, weekly target (hours, or items for a count goal), unit (count goals only),
+# how much of the target is usually reached, preferred start hours, preferred weekdays (Mon = 0)
 GOALS = [
-    ("C++ (learncpp.com)", "#4f8cff", 6, 1.05, [7, 19, 20], [0, 1, 2, 3, 4]),
-    ("Community moderation", "#27ae60", 4, 0.95, [12, 21], [0, 2, 4, 5, 6]),
-    ("Side project: ClockGrid", "#bb6bd9", 8, 0.82, [10, 14, 20], [5, 6, 6, 2]),
-    ("Algorithms & data structures", "#f2994a", 5, 0.78, [18, 19], [1, 3, 5, 6]),
-    ("Reading: CS:APP", "#eb5757", 3, 0.55, [8, 22], [0, 6, 6]),
+    ("C++ (learncpp.com)", "#4f8cff", 6, None, 1.05, [7, 19, 20], [0, 1, 2, 3, 4]),
+    ("Community moderation", "#27ae60", 4, None, 0.95, [12, 21], [0, 2, 4, 5, 6]),
+    ("Side project: ClockGrid", "#bb6bd9", 8, None, 0.82, [10, 14, 20], [5, 6, 6, 2]),
+    ("LeetCode", "#f2994a", 6, "problems", 0.8, [18, 19], [1, 3, 5, 6]),
+    ("Reading: CS:APP", "#eb5757", 3, None, 0.55, [8, 22], [0, 6, 6]),
 ]
 
 
@@ -48,10 +48,13 @@ def seed(db: Database, rng: random.Random) -> None:
     current = db.current_week_start()
     first = current - timedelta(days=7 * (WEEKS - 1))
     created = ts(first, 9)
-    goals = [
-        (db.add_goal(name, color, hours * 60, week_start=first, created_at=created), hours, rate, hrs, days)
-        for name, color, hours, rate, hrs, days in GOALS
-    ]
+    goals = []
+    for name, color, target, unit, rate, hrs, days in GOALS:
+        if unit:
+            goal = db.add_goal(name, color, target, kind="count", unit=unit, week_start=first, created_at=created)
+        else:
+            goal = db.add_goal(name, color, target * 60, week_start=first, created_at=created)
+        goals.append((goal, target, rate, hrs, days))
     now = int(time.time())
     week_fraction = min(1.0, (now - ts(current, 0)) / (7 * 86400))
     busy: set[tuple[date, int]] = set()  # (day, hour) slots already used, to avoid overlaps
@@ -60,8 +63,17 @@ def seed(db: Database, rng: random.Random) -> None:
         week = first + timedelta(days=7 * i)
         db.snapshot_week(week)
         is_current = week == current
-        for goal, hours, rate, start_hours, days in goals:
-            planned = hours * 3600 * rate * rng.uniform(0.7, 1.35)
+        for goal, target, rate, start_hours, days in goals:
+            if goal.is_count:
+                done = round(target * rate * rng.uniform(0.6, 1.4) * (week_fraction if is_current else 1))
+                for _ in range(done):
+                    for _attempt in range(30):  # this week, only days that have already happened
+                        when = ts(week + timedelta(days=rng.randrange(7)), rng.choice(start_hours), rng.randint(0, 59))
+                        if when < now:
+                            db.add_tally(goal.id, now=when)
+                            break
+                continue
+            planned = target * 3600 * rate * rng.uniform(0.7, 1.35)
             if is_current:
                 planned *= week_fraction
             attempts = 0
